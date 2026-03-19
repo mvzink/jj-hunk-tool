@@ -97,6 +97,10 @@ enum Command {
 }
 
 fn main() -> Result<()> {
+    // Prevent any child process (jj, patch, etc.) from opening an interactive editor.
+    // SAFETY: this runs at the start of main before any threads are spawned.
+    unsafe { std::env::set_var("EDITOR", "true") };
+
     let cli = Cli::parse();
 
     match cli.command {
