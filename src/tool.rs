@@ -137,6 +137,28 @@ pub fn discard_hunks(specs: &[HunkSpec<'_>], _revision: &Option<String>) -> Resu
     Ok(())
 }
 
+/// Rewrite a revision in-place, keeping only the selected hunks.
+pub fn diffedit_hunks(specs: &[HunkSpec<'_>], revision: &str) -> Result<()> {
+    let patch_content = build_combined_patch(specs, false)?;
+    if patch_content.is_empty() {
+        bail!("no hunks selected");
+    }
+    run_jj_with_tool(&["diffedit", "-r", revision], &patch_content)
+}
+
+/// Restore selected hunks from one revision into another.
+pub fn restore_hunks(specs: &[HunkSpec<'_>], from: &str, to: Option<&str>) -> Result<()> {
+    let patch_content = build_combined_patch(specs, false)?;
+    if patch_content.is_empty() {
+        bail!("no hunks selected");
+    }
+    let mut args = vec!["restore", "--changes-in", from];
+    if let Some(target) = to {
+        args.extend_from_slice(&["--to", target]);
+    }
+    run_jj_with_tool(&args, &patch_content)
+}
+
 /// JJ tool protocol handler.
 ///
 /// JJ invokes: `jj-hunk-tool _jj-tool $left $right`

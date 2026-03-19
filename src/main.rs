@@ -67,6 +67,25 @@ enum Command {
         #[arg(short, long)]
         revision: Option<String>,
     },
+    /// Rewrite hunks in a revision in-place (via jj diffedit --tool)
+    Diffedit {
+        /// Hunk IDs to keep (all others are removed from the revision)
+        hunk_ids: Vec<String>,
+        /// Revision to edit
+        #[arg(short, long)]
+        revision: Option<String>,
+    },
+    /// Restore selected hunks from a revision (via jj restore --tool)
+    Restore {
+        /// Hunk IDs to restore
+        hunk_ids: Vec<String>,
+        /// Source revision to restore from
+        #[arg(long)]
+        from: String,
+        /// Target revision to restore into (default: @)
+        #[arg(long)]
+        to: Option<String>,
+    },
     /// Internal: JJ tool protocol handler (invoked by jj --tool)
     #[command(name = "_jj-tool")]
     JjTool {
@@ -197,6 +216,21 @@ fn main() -> Result<()> {
             let identified = assign_ids(&hunks);
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
             tool::discard_hunks(&specs, &revision)?;
+        }
+        Command::Diffedit { hunk_ids, revision } => {
+            let rev = revision.as_deref().unwrap_or("@");
+            let raw = get_jj_diff(&Some(rev.to_string()))?;
+            let hunks = parse_diff(&raw);
+            let identified = assign_ids(&hunks);
+            let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
+            tool::diffedit_hunks(&specs, rev)?;
+        }
+        Command::Restore { hunk_ids, from, to } => {
+            let raw = get_jj_diff(&Some(from.clone()))?;
+            let hunks = parse_diff(&raw);
+            let identified = assign_ids(&hunks);
+            let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
+            tool::restore_hunks(&specs, &from, to.as_deref())?;
         }
         Command::JjTool { left, right } => {
             tool::jj_tool_apply(&left, &right)?;
