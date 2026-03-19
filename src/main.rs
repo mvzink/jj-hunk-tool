@@ -293,3 +293,70 @@ fn parse_id_range(raw: &str) -> Result<(&str, Vec<(usize, usize)>)> {
     }
     Ok((id, ranges))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_id_range_plain_id() {
+        let (id, ranges) = parse_id_range("abc1234").unwrap();
+        assert_eq!(id, "abc1234");
+        assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn parse_id_range_single_line() {
+        let (id, ranges) = parse_id_range("abc:5").unwrap();
+        assert_eq!(id, "abc");
+        assert_eq!(ranges, vec![(5, 5)]);
+    }
+
+    #[test]
+    fn parse_id_range_range() {
+        let (id, ranges) = parse_id_range("abc:3-10").unwrap();
+        assert_eq!(id, "abc");
+        assert_eq!(ranges, vec![(3, 10)]);
+    }
+
+    #[test]
+    fn parse_id_range_multiple_ranges() {
+        let (id, ranges) = parse_id_range("abc:1-3,7-9").unwrap();
+        assert_eq!(id, "abc");
+        assert_eq!(ranges, vec![(1, 3), (7, 9)]);
+    }
+
+    #[test]
+    fn parse_id_range_zero_start_rejected() {
+        assert!(parse_id_range("abc:0-5").is_err());
+    }
+
+    #[test]
+    fn parse_id_range_zero_end_rejected() {
+        assert!(parse_id_range("abc:1-0").is_err());
+    }
+
+    #[test]
+    fn parse_id_range_reversed_rejected() {
+        assert!(parse_id_range("abc:5-3").is_err());
+    }
+
+    #[test]
+    fn parse_id_range_non_numeric_rejected() {
+        assert!(parse_id_range("abc:xyz").is_err());
+    }
+
+    #[test]
+    fn parse_id_range_empty_parts_skipped() {
+        let (id, ranges) = parse_id_range("abc:1-3,,7-9").unwrap();
+        assert_eq!(id, "abc");
+        assert_eq!(ranges, vec![(1, 3), (7, 9)]);
+    }
+
+    #[test]
+    fn parse_id_range_trailing_comma() {
+        let (id, ranges) = parse_id_range("abc:1-3,").unwrap();
+        assert_eq!(id, "abc");
+        assert_eq!(ranges, vec![(1, 3)]);
+    }
+}
