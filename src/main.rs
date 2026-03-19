@@ -86,6 +86,12 @@ enum Command {
         #[arg(long)]
         to: Option<String>,
     },
+    /// Install the jj-surgeon skill into Claude Code (~/.claude/commands/)
+    InstallSkill {
+        /// Target directory (default: ~/.claude/commands)
+        #[arg(long)]
+        target: Option<String>,
+    },
     /// Internal: JJ tool protocol handler (invoked by jj --tool)
     #[command(name = "_jj-tool")]
     JjTool {
@@ -236,6 +242,9 @@ fn main() -> Result<()> {
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
             tool::restore_hunks(&specs, &from, to.as_deref())?;
         }
+        Command::InstallSkill { target } => {
+            install_skill(target.as_deref())?;
+        }
         Command::JjTool { left, right } => {
             tool::jj_tool_apply(&left, &right)?;
         }
@@ -244,7 +253,38 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+use std::path::PathBuf;
 use tool::HunkSpec;
+
+const SKILL_MD: &str = include_str!("../skills/jj-surgeon/SKILL.md");
+const REF_CONFLICT: &str = include_str!("../skills/jj-surgeon/references/conflict-resolution.md");
+const REF_GIT_INTEROP: &str = include_str!("../skills/jj-surgeon/references/git-interop.md");
+const REF_REVSET: &str = include_str!("../skills/jj-surgeon/references/revset-reference.md");
+const REF_TEMPLATE: &str = include_str!("../skills/jj-surgeon/references/template-reference.md");
+
+fn install_skill(target: Option<&str>) -> Result<()> {
+    let skills_dir = match target {
+        Some(t) => PathBuf::from(t),
+        None => {
+            let home = std::env::var("HOME")
+                .map_err(|_| anyhow::anyhow!("HOME not set"))?;
+            PathBuf::from(home).join(".claude").join("skills")
+        }
+    };
+
+    let skill_dir = skills_dir.join("jj-surgeon");
+    let refs_dir = skill_dir.join("references");
+    std::fs::create_dir_all(&refs_dir)?;
+
+    std::fs::write(skill_dir.join("SKILL.md"), SKILL_MD)?;
+    std::fs::write(refs_dir.join("conflict-resolution.md"), REF_CONFLICT)?;
+    std::fs::write(refs_dir.join("git-interop.md"), REF_GIT_INTEROP)?;
+    std::fs::write(refs_dir.join("revset-reference.md"), REF_REVSET)?;
+    std::fs::write(refs_dir.join("template-reference.md"), REF_TEMPLATE)?;
+
+    println!("Installed jj-surgeon skill to {}", skill_dir.display());
+    Ok(())
+}
 
 /// Resolve hunk ID specs (with optional line ranges) against identified hunks.
 fn resolve_hunk_specs<'a>(
