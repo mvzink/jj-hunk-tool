@@ -98,6 +98,27 @@ impl TestRepo {
             .expect_err(&format!("tool {:?} should have failed", args))
     }
 
+    /// Run tool, return (stdout, stderr) separately.
+    fn tool_output(&self, args: &[&str]) -> (String, String) {
+        let output = Command::new(&self.binary)
+            .args(args)
+            .current_dir(self.path())
+            .env("JJ_CONFIG", "")
+            .env("EDITOR", "true")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "tool {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        (
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
+        )
+    }
+
     /// Extract hunk IDs from `hunks` output. Returns vec of (id, line_text).
     fn get_hunk_ids(&self, extra_args: &[&str]) -> Vec<(String, String)> {
         let mut args = vec!["hunks"];
@@ -1255,6 +1276,59 @@ fn jj_tool_empty_patch() {
     // Right should match left exactly (reset, no patch applied)
     let content = std::fs::read_to_string(right.path().join("file.txt")).unwrap();
     assert_eq!(content, "content\n");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// output tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn commit_forwards_jj_output() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "original\n");
+    repo.write_file("a.txt", "modified\n");
+
+    let id = repo.get_single_hunk_id(&[]);
+    let (_stdout, stderr) = repo.tool_output(&["commit", &id, "-m", "test commit"]);
+    // jj prints status info (e.g. "Working copy now at: ...") to stderr
+    assert!(!stderr.is_empty(), "commit should forward jj's output");
+}
+
+#[test]
+fn discard_outputs_hunk_ids_to_stderr() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "original\n");
+    repo.write_file("a.txt", "modified\n");
+
+    let id = repo.get_single_hunk_id(&[]);
+    let (_stdout, stderr) = repo.tool_output(&["discard", &id]);
+    assert!(
+        stderr.contains(&id),
+        "discard stderr should contain hunk ID {id}, got: {stderr}"
+    );
+}
+
+#[test]
+fn discard_multiple_outputs_all_hunk_ids() {
+    let repo = TestRepo::new();
+    let content = repo.write_two_hunk_file("f.txt");
+    repo.jj(&["commit", "-m", "init"]);
+    let new_content = content.replace("top", "TOP").replace("bottom", "BOTTOM");
+    repo.write_file("f.txt", &new_content);
+
+    let ids = repo.get_hunk_ids(&[]);
+    assert!(ids.len() >= 2);
+
+    let id_strs: Vec<&str> = ids.iter().map(|(id, _)| id.as_str()).collect();
+    let mut args = vec!["discard"];
+    args.extend_from_slice(&id_strs);
+    let (_stdout, stderr) = repo.tool_output(&args);
+    for (id, _) in &ids {
+        assert!(
+            stderr.contains(id.as_str()),
+            "discard stderr should contain hunk ID {id}, got: {stderr}"
+        );
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

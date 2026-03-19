@@ -69,7 +69,7 @@ fn run_jj_with_tool(jj_args: &[&str], patch_content: &str) -> Result<()> {
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !stdout.is_empty() {
-        eprint!("{stdout}");
+        print!("{stdout}");
     }
 
     if !output.status.success() {
@@ -136,6 +136,10 @@ pub fn discard_hunks(specs: &[HunkSpec<'_>], _revision: &Option<String>) -> Resu
     let status = child.wait().context("waiting for patch")?;
     if !status.success() {
         bail!("patch --reverse failed (exit code: {:?})", status.code());
+    }
+
+    for (id, _, _) in specs {
+        eprintln!("discarded {id}");
     }
 
     Ok(())
