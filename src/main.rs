@@ -188,33 +188,15 @@ fn main() -> Result<()> {
             let raw = get_jj_diff(&revision)?;
             let hunks = parse_diff(&raw);
             let identified = assign_ids(&hunks);
-            let selected: Vec<_> = hunk_ids
-                .iter()
-                .map(|requested_id| {
-                    identified
-                        .iter()
-                        .find(|(id, _)| id == requested_id)
-                        .map(|(_, hunk)| *hunk)
-                        .ok_or_else(|| anyhow::anyhow!("hunk not found: {requested_id}"))
-                })
-                .collect::<Result<_>>()?;
-            tool::commit_hunks(&selected, &revision, message.as_deref())?;
+            let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
+            tool::commit_hunks(&specs, &revision, message.as_deref())?;
         }
         Command::Discard { hunk_ids, revision } => {
             let raw = get_jj_diff(&revision)?;
             let hunks = parse_diff(&raw);
             let identified = assign_ids(&hunks);
-            let selected: Vec<_> = hunk_ids
-                .iter()
-                .map(|requested_id| {
-                    identified
-                        .iter()
-                        .find(|(id, _)| id == requested_id)
-                        .map(|(_, hunk)| *hunk)
-                        .ok_or_else(|| anyhow::anyhow!("hunk not found: {requested_id}"))
-                })
-                .collect::<Result<_>>()?;
-            tool::discard_hunks(&selected, &revision)?;
+            let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
+            tool::discard_hunks(&specs, &revision)?;
         }
         Command::JjTool { left, right } => {
             tool::jj_tool_apply(&left, &right)?;
@@ -222,6 +204,25 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+use tool::HunkSpec;
+
+/// Resolve hunk ID specs (with optional line ranges) against identified hunks.
+fn resolve_hunk_specs<'a>(
+    raw_specs: &[String],
+    identified: &'a [(String, &'a git_surgeon::diff::DiffHunk)],
+) -> Result<Vec<HunkSpec<'a>>> {
+    let mut specs = Vec::new();
+    for raw in raw_specs {
+        let (id, ranges) = parse_id_range(raw)?;
+        let (matched_id, hunk) = identified
+            .iter()
+            .find(|(hid, _)| hid == id)
+            .ok_or_else(|| anyhow::anyhow!("hunk not found: {id}"))?;
+        specs.push((matched_id.as_str(), *hunk, ranges));
+    }
+    Ok(specs)
 }
 
 /// Parse an ID spec that may contain inline range suffixes.
