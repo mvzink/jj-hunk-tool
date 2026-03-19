@@ -112,7 +112,10 @@ pub fn commit_hunks(
 
 /// Discard selected hunks by reverse-applying the patch directly.
 pub fn discard_hunks(specs: &[HunkSpec<'_>], _revision: &Option<String>) -> Result<()> {
-    let patch_content = build_combined_patch(specs, false)?;
+    // reverse=true so partial-range slicing treats out-of-range lines correctly
+    // for the working copy state (keeps existing additions as context, drops
+    // non-existent deletions)
+    let patch_content = build_combined_patch(specs, true)?;
     if patch_content.is_empty() {
         bail!("no hunks selected");
     }
