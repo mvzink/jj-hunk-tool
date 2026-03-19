@@ -265,6 +265,7 @@ dependencies = [
 [[package]]
 name = "git-surgeon"
 version = "0.1.12"
+source = "git+https://github.com/mvzink/git-surgeon.git?branch=lib#14b7929d1d93ded417b1b61aab8bddb86c5a5f77"
 dependencies = [
  "anyhow",
  "clap",

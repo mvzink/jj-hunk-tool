@@ -6,5 +6,5 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-git-surgeon = { path = "../git-surgeon" }
+git-surgeon = { git = "https://github.com/mvzink/git-surgeon.git", branch = "lib" }
 tempfile = "3"
