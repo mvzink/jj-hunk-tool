@@ -59,6 +59,8 @@ fn run_jj_with_tool(jj_args: &[&str], patch_content: &str) -> Result<()> {
     cmd.args(["--config-file", &config_file.path().display().to_string()]);
     cmd.args(["--tool", "jj-hunk-tool"]);
     cmd.env(PATCH_ENV_VAR, patch_file.path());
+    // Prevent jj from ever opening an interactive editor
+    cmd.env("EDITOR", "true");
 
     let output = cmd.output().context("running jj")?;
 
