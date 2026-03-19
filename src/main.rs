@@ -6,6 +6,8 @@ mod tool;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use diff::{assign_ids, get_jj_diff, parse_diff};
+
 #[derive(Parser)]
 #[command(name = "jj-hunk-tool", version, about = "Hunk-level operations for jj")]
 struct Cli {
@@ -66,47 +68,86 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Hunks { revision } => {
-            let diff = diff::get_diff(&revision)?;
-            let hunks = diff::parse_hunks(&diff)?;
-            for hunk in &hunks {
-                let id = hunk_id::compute_id(hunk);
-                println!("{} {}:{}", id, hunk.file_path, hunk.header);
+            let raw = get_jj_diff(&revision)?;
+            let hunks = parse_diff(&raw);
+            let identified = assign_ids(&hunks);
+            for (id, hunk) in &identified {
+                println!(
+                    "{id} {file}:{header}",
+                    file = hunk.file,
+                    header = hunk.header
+                );
             }
         }
         Command::Show { hunk_id, revision } => {
-            let diff = diff::get_diff(&revision)?;
-            let hunks = diff::parse_hunks(&diff)?;
-            let hunk = hunks
+            let raw = get_jj_diff(&revision)?;
+            let hunks = parse_diff(&raw);
+            let identified = assign_ids(&hunks);
+            let (_id, hunk) = identified
                 .iter()
-                .find(|h| hunk_id::compute_id(h) == hunk_id)
+                .find(|(id, _)| id == &hunk_id)
                 .ok_or_else(|| anyhow::anyhow!("hunk not found: {hunk_id}"))?;
-            print!("{}", hunk.content);
+            let patch_text = git_surgeon::patch::build_patch(hunk);
+            print!("{patch_text}");
         }
         Command::Patch {
             hunk_ids,
             revision,
             reverse,
         } => {
-            let diff = diff::get_diff(&revision)?;
-            let hunks = diff::parse_hunks(&diff)?;
-            let selected = diff::select_hunks(&hunks, &hunk_ids)?;
-            let output = patch::build_patch(&selected, reverse);
-            print!("{output}");
+            let raw = get_jj_diff(&revision)?;
+            let hunks = parse_diff(&raw);
+            let identified = assign_ids(&hunks);
+            for requested_id in &hunk_ids {
+                let (_id, hunk) = identified
+                    .iter()
+                    .find(|(id, _)| id == requested_id)
+                    .ok_or_else(|| anyhow::anyhow!("hunk not found: {requested_id}"))?;
+                diff::check_supported(hunk, requested_id)?;
+                if reverse {
+                    let reversed = git_surgeon::patch::slice_hunk(hunk, 1, hunk.lines.len(), true)?;
+                    let patch_text = git_surgeon::patch::build_patch(&reversed);
+                    print!("{patch_text}");
+                } else {
+                    let patch_text = git_surgeon::patch::build_patch(hunk);
+                    print!("{patch_text}");
+                }
+            }
         }
         Command::Commit {
             hunk_ids,
             revision,
             message,
         } => {
-            let diff = diff::get_diff(&revision)?;
-            let hunks = diff::parse_hunks(&diff)?;
-            let selected = diff::select_hunks(&hunks, &hunk_ids)?;
+            let raw = get_jj_diff(&revision)?;
+            let hunks = parse_diff(&raw);
+            let identified = assign_ids(&hunks);
+            let selected: Vec<_> = hunk_ids
+                .iter()
+                .map(|requested_id| {
+                    identified
+                        .iter()
+                        .find(|(id, _)| id == requested_id)
+                        .map(|(_, hunk)| *hunk)
+                        .ok_or_else(|| anyhow::anyhow!("hunk not found: {requested_id}"))
+                })
+                .collect::<Result<_>>()?;
             tool::commit_hunks(&selected, &revision, message.as_deref())?;
         }
         Command::Discard { hunk_ids, revision } => {
-            let diff = diff::get_diff(&revision)?;
-            let hunks = diff::parse_hunks(&diff)?;
-            let selected = diff::select_hunks(&hunks, &hunk_ids)?;
+            let raw = get_jj_diff(&revision)?;
+            let hunks = parse_diff(&raw);
+            let identified = assign_ids(&hunks);
+            let selected: Vec<_> = hunk_ids
+                .iter()
+                .map(|requested_id| {
+                    identified
+                        .iter()
+                        .find(|(id, _)| id == requested_id)
+                        .map(|(_, hunk)| *hunk)
+                        .ok_or_else(|| anyhow::anyhow!("hunk not found: {requested_id}"))
+                })
+                .collect::<Result<_>>()?;
             tool::discard_hunks(&selected, &revision)?;
         }
     }
