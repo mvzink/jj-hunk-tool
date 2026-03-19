@@ -22,6 +22,12 @@ enum Command {
         /// Revision to diff (default: working copy)
         #[arg(short, long)]
         revision: Option<String>,
+        /// Show all lines with line numbers
+        #[arg(long)]
+        full: bool,
+        /// Filter to a specific file
+        #[arg(long)]
+        file: Option<String>,
     },
     /// Show details of a specific hunk
     Show {
@@ -75,16 +81,64 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Hunks { revision } => {
+        Command::Hunks {
+            revision,
+            full,
+            file,
+        } => {
             let raw = get_jj_diff(&revision)?;
             let hunks = parse_diff(&raw);
             let identified = assign_ids(&hunks);
+
+            let max_preview_lines = 4;
+
             for (id, hunk) in &identified {
-                println!(
-                    "{id} {file}:{header}",
-                    file = hunk.file,
-                    header = hunk.header
-                );
+                if let Some(ref f) = file
+                    && &hunk.file != f
+                {
+                    continue;
+                }
+
+                let additions = hunk.lines.iter().filter(|l| l.starts_with('+')).count();
+                let deletions = hunk.lines.iter().filter(|l| l.starts_with('-')).count();
+
+                let func_ctx = hunk
+                    .header
+                    .find("@@ ")
+                    .and_then(|start| {
+                        let rest = &hunk.header[start + 3..];
+                        rest.find("@@ ").map(|end| rest[end + 3..].trim())
+                    })
+                    .unwrap_or("");
+
+                let func_part = if func_ctx.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {func_ctx}")
+                };
+
+                println!("{id} {}{func_part} (+{additions} -{deletions})", hunk.file);
+
+                if full {
+                    let width = hunk.lines.len().to_string().len();
+                    for (i, line) in hunk.lines.iter().enumerate() {
+                        println!("{:>w$}:{line}", i + 1, w = width);
+                    }
+                } else {
+                    let changed: Vec<&String> = hunk
+                        .lines
+                        .iter()
+                        .filter(|l| l.starts_with('+') || l.starts_with('-'))
+                        .collect();
+                    let show = changed.len().min(max_preview_lines);
+                    for line in &changed[..show] {
+                        println!("  {line}");
+                    }
+                    if changed.len() > max_preview_lines {
+                        println!("  ... (+{} more lines)", changed.len() - max_preview_lines);
+                    }
+                }
+                println!();
             }
         }
         Command::Show { hunk_id, revision } => {
