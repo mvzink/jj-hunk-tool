@@ -1094,19 +1094,22 @@ fn diffedit_invalid_id() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn restore_hunk_from_parent() {
+fn restore_undo_working_copy_change() {
     let repo = TestRepo::new();
-    repo.commit_file("a.txt", "original\n");
-    repo.write_file("a.txt", "modified\n");
-    repo.jj(&["commit", "-m", "modify"]);
-    // Now @- has the modification, @ is empty.
-    // Restore the hunk from @- into @ (working copy).
-    let id = repo.get_single_hunk_id(&["-r", "@-"]);
-    repo.tool_ok(&["restore", &id, "--from", "@-"]);
+    repo.commit_file("a.txt", "a\n");
+    repo.commit_file("b.txt", "b\n");
+    repo.write_file("a.txt", "a changed\n");
+    repo.write_file("b.txt", "b changed\n");
 
-    // Working copy should now have the change from @-
+    // Undo only the a.txt change from the working copy using restore --changes-in @
+    let a_id = repo.get_hunk_id_for_file("a.txt", &[]);
+    repo.tool_ok(&["restore", &a_id, "--from", "@"]);
+
+    // a.txt should be back to original, b.txt still changed
+    assert_eq!(repo.read_file("a.txt"), "a\n", "a.txt should be restored");
     let diff = repo.jj_diff("@");
-    assert!(diff.contains("a.txt"));
+    assert!(diff.contains("b.txt"), "b.txt should still be changed");
+    assert!(!diff.contains("a.txt"), "a.txt change should be undone");
 }
 
 #[test]
