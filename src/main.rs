@@ -163,20 +163,21 @@ fn main() -> Result<()> {
             let raw = get_jj_diff(&revision)?;
             let hunks = parse_diff(&raw);
             let identified = assign_ids(&hunks);
-            for requested_id in &hunk_ids {
+            for raw_spec in &hunk_ids {
+                let (id, ranges) = parse_id_range(raw_spec)?;
                 let (_id, hunk) = identified
                     .iter()
-                    .find(|(id, _)| id == requested_id)
-                    .ok_or_else(|| anyhow::anyhow!("hunk not found: {requested_id}"))?;
-                diff::check_supported(hunk, requested_id)?;
-                if reverse {
-                    let reversed = git_surgeon::patch::slice_hunk(hunk, 1, hunk.lines.len(), true)?;
-                    let patch_text = git_surgeon::patch::build_patch(&reversed);
-                    print!("{patch_text}");
+                    .find(|(hid, _)| hid == id)
+                    .ok_or_else(|| anyhow::anyhow!("hunk not found: {id}"))?;
+                diff::check_supported(hunk, id)?;
+                let patched = if !ranges.is_empty() {
+                    git_surgeon::patch::slice_hunk_multi(hunk, &ranges, reverse)?
+                } else if reverse {
+                    git_surgeon::patch::slice_hunk(hunk, 1, hunk.lines.len(), true)?
                 } else {
-                    let patch_text = git_surgeon::patch::build_patch(hunk);
-                    print!("{patch_text}");
-                }
+                    (*hunk).clone()
+                };
+                print!("{}", git_surgeon::patch::build_patch(&patched));
             }
         }
         Command::Commit {
@@ -221,4 +222,39 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse an ID spec that may contain inline range suffixes.
+/// Supports: "id", "id:5", "id:1-11", "id:2,5-6,34" (comma-separated).
+/// Returns (id, vector of ranges). Empty vector means "whole hunk".
+fn parse_id_range(raw: &str) -> Result<(&str, Vec<(usize, usize)>)> {
+    let Some((id, range_str)) = raw.split_once(':') else {
+        return Ok((raw, Vec::new()));
+    };
+    let mut ranges = Vec::new();
+    for part in range_str.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (start, end) = if let Some((a, b)) = part.split_once('-') {
+            let start: usize = a
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid start number in '{raw}'"))?;
+            let end: usize = b
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid end number in '{raw}'"))?;
+            (start, end)
+        } else {
+            let n: usize = part
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid line number in '{raw}'"))?;
+            (n, n)
+        };
+        if start == 0 || end == 0 || start > end {
+            anyhow::bail!("range must be 1-based and start <= end in '{raw}'");
+        }
+        ranges.push((start, end));
+    }
+    Ok((id, ranges))
 }
