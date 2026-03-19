@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Helper to set up a temp jj repo for testing.
+// ──────────────────────────────────────────────────────────────────────────────
+// Test harness
+// ──────────────────────────────────────────────────────────────────────────────
+
 struct TestRepo {
     dir: tempfile::TempDir,
     binary: PathBuf,
@@ -10,7 +13,6 @@ struct TestRepo {
 impl TestRepo {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        // Initialize jj repo
         let status = Command::new("jj")
             .args(["git", "init", "--no-pager"])
             .current_dir(dir.path())
@@ -18,9 +20,7 @@ impl TestRepo {
             .output()
             .unwrap();
         assert!(status.status.success(), "jj git init failed");
-
         let binary = PathBuf::from(env!("CARGO_BIN_EXE_jj-hunk-tool"));
-
         TestRepo { dir, binary }
     }
 
@@ -46,6 +46,7 @@ impl TestRepo {
             .arg("--no-pager")
             .current_dir(self.path())
             .env("JJ_CONFIG", "")
+            .env("EDITOR", "true")
             .output()
             .unwrap();
         assert!(
@@ -62,6 +63,7 @@ impl TestRepo {
             .args(args)
             .current_dir(self.path())
             .env("JJ_CONFIG", "")
+            .env("EDITOR", "true")
             .output()
             .unwrap();
         if output.status.success() {
