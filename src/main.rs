@@ -149,8 +149,11 @@ fn main() -> Result<()> {
                 .iter()
                 .find(|(id, _)| id == &hunk_id)
                 .ok_or_else(|| anyhow::anyhow!("hunk not found: {hunk_id}"))?;
-            let patch_text = git_surgeon::patch::build_patch(hunk);
-            print!("{patch_text}");
+            println!("{}", hunk.header);
+            let width = hunk.lines.len().to_string().len();
+            for (i, line) in hunk.lines.iter().enumerate() {
+                println!("{:>w$}:{line}", i + 1, w = width);
+            }
         }
         Command::Patch {
             hunk_ids,
