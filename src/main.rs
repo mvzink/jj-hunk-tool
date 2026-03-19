@@ -61,6 +61,14 @@ enum Command {
         #[arg(short, long)]
         revision: Option<String>,
     },
+    /// Internal: JJ tool protocol handler (invoked by jj --tool)
+    #[command(name = "_jj-tool")]
+    JjTool {
+        /// Left directory (parent/base state)
+        left: String,
+        /// Right directory (current state, writable)
+        right: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -149,6 +157,9 @@ fn main() -> Result<()> {
                 })
                 .collect::<Result<_>>()?;
             tool::discard_hunks(&selected, &revision)?;
+        }
+        Command::JjTool { left, right } => {
+            tool::jj_tool_apply(&left, &right)?;
         }
     }
 
