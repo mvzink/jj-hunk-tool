@@ -85,7 +85,7 @@ enum Command {
         target: Option<String>,
     },
     /// Internal: JJ tool protocol handler (invoked by jj --tool)
-    #[command(name = "_jj-tool")]
+    #[command(name = "_jj-tool", hide = true)]
     JjTool {
         /// Left directory (parent/base state)
         left: String,
