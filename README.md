@@ -37,6 +37,17 @@ jj-hunk-tool commit abc1234:1-10     # lines 1-10
 jj-hunk-tool commit abc1234:1-3,7-9  # multiple ranges
 ```
 
+## Shell alias
+
+If you use jj-hunk-tool as a human (or even just want to alias specific subcommands), you can add a custom command alias in your jj `config.toml`:
+
+```toml
+[aliases]
+hunk = ["util", "exec", "--", "jj-hunk-tool"]
+```
+
+Then you can use `jj hunk hunks`, `jj hunk commit abc1234`, etc.
+
 ## jj-surgeon skill
 
 The repo includes a comprehensive Claude Code skill for working with jj, not just jj-hunk-tool but jj in general (revsets, rebasing, conflict resolution, etc.). Install it with:
