@@ -28,7 +28,8 @@ pub fn build_combined_patch(specs: &[HunkSpec<'_>], reverse: bool) -> Result<Str
     Ok(combined)
 }
 
-/// Write a temp jj config TOML that defines jj-hunk-tool as a merge tool.
+/// Write a temp jj config TOML that defines jj-hunk-tool as a merge tool
+/// and overrides the user's editor to prevent interactive prompts.
 fn write_tool_config(exe: &Path) -> Result<tempfile::NamedTempFile> {
     let mut config_file = tempfile::Builder::new()
         .suffix(".toml")
@@ -36,7 +37,7 @@ fn write_tool_config(exe: &Path) -> Result<tempfile::NamedTempFile> {
         .context("creating temp config file")?;
     write!(
         config_file,
-        "[merge-tools.jj-hunk-tool]\nprogram = {exe:?}\nedit-args = [\"_jj-tool\", \"$left\", \"$right\"]\n",
+        "[ui]\neditor = \"true\"\n\n[merge-tools.jj-hunk-tool]\nprogram = {exe:?}\nedit-args = [\"_jj-tool\", \"$left\", \"$right\"]\n",
         exe = exe.display().to_string(),
     )
     .context("writing config")?;
