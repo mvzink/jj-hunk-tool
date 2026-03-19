@@ -120,13 +120,17 @@ impl TestRepo {
     }
 
     /// Extract hunk IDs from `hunks` output. Returns vec of (id, line_text).
+    /// Header lines look like "abc1234 file.txt (+N -M)"; numbered lines look like "1:...".
     fn get_hunk_ids(&self, extra_args: &[&str]) -> Vec<(String, String)> {
         let mut args = vec!["hunks"];
         args.extend_from_slice(extra_args);
         let output = self.tool_ok(&args);
         output
             .lines()
-            .filter(|l| !l.is_empty() && !l.starts_with(' '))
+            .filter(|l| {
+                let first = l.split_whitespace().next().unwrap_or("");
+                first.len() == 7 && first.chars().all(|c| c.is_ascii_hexdigit())
+            })
             .map(|l| {
                 let id = l.split_whitespace().next().unwrap().to_string();
                 (id, l.to_string())
@@ -232,19 +236,14 @@ fn hunks_multiple_files() {
 }
 
 #[test]
-fn hunks_full_mode() {
+fn hunks_show_subcommand_removed() {
     let repo = TestRepo::new();
-    repo.commit_file("a.txt", "line1\nline2\nline3\n");
-    repo.write_file("a.txt", "line1\nchanged\nline3\n");
+    repo.commit_file("a.txt", "line1\n");
+    repo.write_file("a.txt", "line1\nchanged\n");
 
-    let output = repo.tool_ok(&["hunks", "--full"]);
-    // Should have line numbers
-    assert!(output.contains("1:"), "should have line numbers");
-    // Should include context lines
-    assert!(
-        output.contains("line1") || output.contains("line3"),
-        "should have context"
-    );
+    let id = repo.get_single_hunk_id(&[]);
+    let err = repo.tool(&["show", &id]);
+    assert!(err.is_err(), "show subcommand should not exist");
 }
 
 #[test]
@@ -286,18 +285,19 @@ fn hunks_revision() {
 }
 
 #[test]
-fn hunks_preview_truncation() {
+fn hunks_default_no_truncation() {
     let repo = TestRepo::new();
     repo.commit_file("big.txt", "");
-    // Create a diff with >4 changed lines
     let new_content: String = (1..=10).map(|i| format!("line{i}\n")).collect();
     repo.write_file("big.txt", &new_content);
 
     let output = repo.tool_ok(&["hunks"]);
+    // Default (full) mode should show all lines, not truncate
     assert!(
-        output.contains("... (+"),
-        "should truncate with '...' message"
+        !output.contains("... (+"),
+        "default should not truncate"
     );
+    assert!(output.contains("line10"), "should show all lines");
 }
 
 #[test]
@@ -399,13 +399,13 @@ fn hunks_file_in_subdirectory() {
 }
 
 #[test]
-fn hunks_full_with_revision() {
+fn hunks_with_revision() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "line1\n");
     repo.write_file("a.txt", "line1\nline2\n");
     repo.jj(&["commit", "-m", "add line2"]);
 
-    let output = repo.tool_ok(&["hunks", "--full", "-r", "@-"]);
+    let output = repo.tool_ok(&["hunks", "-r", "@-"]);
     assert!(
         output.contains("1:"),
         "should have line numbers from revision"
@@ -428,72 +428,31 @@ fn hunks_file_filter_with_revision() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// show
+// hunks: default shows line numbers (old --full behavior)
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn show_valid_id() {
+fn hunks_default_shows_line_numbers() {
     let repo = TestRepo::new();
-    repo.commit_file("a.txt", "line1\nline2\n");
-    repo.write_file("a.txt", "line1\nchanged\n");
+    repo.commit_file("a.txt", "line1\nline2\nline3\n");
+    repo.write_file("a.txt", "line1\nchanged\nline3\n");
 
-    let id = repo.get_single_hunk_id(&[]);
-    let output = repo.tool_ok(&["show", &id]);
-    assert!(output.contains("@@"), "should have @@ header");
-    assert!(output.contains("1:"), "should have line numbers");
-    assert!(output.contains("-line2") || output.contains("+changed"));
-}
-
-#[test]
-fn show_invalid_id() {
-    let repo = TestRepo::new();
-    repo.commit_file("a.txt", "line1\n");
-    repo.write_file("a.txt", "line1\nchanged\n");
-
-    let err = repo.tool_err(&["show", "invalid"]);
+    let output = repo.tool_ok(&["hunks"]);
+    assert!(output.contains("1:"), "default should have line numbers");
+    // Should include context lines
     assert!(
-        err.contains("hunk not found"),
-        "should say hunk not found: {err}"
+        output.contains("line1") || output.contains("line3"),
+        "default should have context"
     );
 }
 
 #[test]
-fn show_with_revision() {
-    let repo = TestRepo::new();
-    repo.commit_file("a.txt", "original\n");
-    repo.write_file("a.txt", "modified\n");
-    repo.jj(&["commit", "-m", "modify"]);
-
-    let id = repo.get_single_hunk_id(&["-r", "@-"]);
-    let output = repo.tool_ok(&["show", &id, "-r", "@-"]);
-    assert!(output.contains("@@"));
-    assert!(output.contains("1:"));
-}
-
-#[test]
-fn show_context_lines_present() {
-    let repo = TestRepo::new();
-    repo.commit_file("a.txt", "line1\nline2\nline3\nline4\nline5\n");
-    repo.write_file("a.txt", "line1\nline2\nCHANGED\nline4\nline5\n");
-
-    let id = repo.get_single_hunk_id(&[]);
-    let output = repo.tool_ok(&["show", &id]);
-    // Context lines (space-prefixed) should be present
-    assert!(
-        output.contains(" line"),
-        "should have context lines: {output}"
-    );
-}
-
-#[test]
-fn show_line_numbers_sequential() {
+fn hunks_default_line_numbers_sequential() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "a\nb\nc\n");
     repo.write_file("a.txt", "a\nB\nc\n");
 
-    let id = repo.get_single_hunk_id(&[]);
-    let output = repo.tool_ok(&["show", &id]);
-    // Find numbered lines and verify they're sequential
+    let output = repo.tool_ok(&["hunks"]);
     let numbered: Vec<usize> = output
         .lines()
         .filter_map(|l| {
@@ -505,6 +464,33 @@ fn show_line_numbers_sequential() {
     for pair in numbered.windows(2) {
         assert_eq!(pair[1], pair[0] + 1, "line numbers should be sequential");
     }
+}
+
+#[test]
+fn hunks_compact_mode() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "line1\nline2\nline3\n");
+    repo.write_file("a.txt", "line1\nchanged\nline3\n");
+
+    let output = repo.tool_ok(&["hunks", "--compact"]);
+    // Compact should NOT have line numbers
+    assert!(!output.contains("1:"), "compact should not have line numbers");
+    // But should still show changed lines
+    assert!(output.contains("+changed") || output.contains("-line2"));
+}
+
+#[test]
+fn hunks_compact_truncation() {
+    let repo = TestRepo::new();
+    repo.commit_file("big.txt", "");
+    let new_content: String = (1..=10).map(|i| format!("line{i}\n")).collect();
+    repo.write_file("big.txt", &new_content);
+
+    let output = repo.tool_ok(&["hunks", "--compact"]);
+    assert!(
+        output.contains("... (+"),
+        "compact should truncate with '...' message"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

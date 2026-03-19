@@ -13,11 +13,8 @@ cargo install --git https://github.com/mvzink/jj-hunk-tool.git
 ## Usage
 
 ```
-# List hunks with stable IDs
-jj-hunk-tool hunks [-r <rev>] [--full] [--file <path>]
-
-# Show a specific hunk with line numbers
-jj-hunk-tool show <hunk-id> [-r <rev>]
+# List hunks with stable IDs (includes line numbers for range selection)
+jj-hunk-tool hunks [-r <rev>] [--compact] [--file <path>]
 
 # Output a patch for selected hunks
 jj-hunk-tool patch <hunk-id>... [-r <rev>] [--reverse]
@@ -34,7 +31,7 @@ jj-hunk-tool diffedit <hunk-id>... [-r <rev>]
 # Restore selected hunks from one revision into another
 jj-hunk-tool restore <hunk-id>... --from <rev> [--to <rev>]
 
-# Line ranges for sub-hunk precision (use `show` to see line numbers)
+# Line ranges for sub-hunk precision (use `hunks` to see line numbers)
 jj-hunk-tool commit abc1234:5        # line 5
 jj-hunk-tool commit abc1234:1-10     # lines 1-10
 jj-hunk-tool commit abc1234:1-3,7-9  # multiple ranges

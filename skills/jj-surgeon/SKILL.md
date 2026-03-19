@@ -53,15 +53,11 @@ Use `jj-hunk-tool` for non-interactive hunk-level selection -- the one thing jj
 cannot do without an interactive editor.
 
 ```bash
-# List hunks with IDs, file paths, +/- counts, 4-line preview
+# List hunks with IDs, file paths, +/- counts, and numbered lines
 jj-hunk-tool hunks
 jj-hunk-tool hunks -r <revset>          # from a specific revision
 jj-hunk-tool hunks --file src/main.rs   # filter to one file
-jj-hunk-tool hunks --full               # all lines with line numbers
-
-# Show a single hunk (lines numbered for range selection)
-jj-hunk-tool show <id>
-jj-hunk-tool show <id> -r <revset>
+jj-hunk-tool hunks --compact            # brief preview (no line numbers)
 
 # Output unified diff patch for selected hunks
 jj-hunk-tool patch <id1> <id2:1-10> ...
@@ -91,7 +87,7 @@ jj-hunk-tool restore <id> --from <revset>
 - Stable across runs as long as the diff hasn't changed
 - Duplicates get `-2`, `-3` suffixes
 - If not found, re-run `hunks` for fresh IDs
-- Line ranges: `id:5-30` (1-based, from `show` or `hunks --full`)
+- Line ranges: `id:5-30` (1-based, from `hunks` output)
 - Multiple ranges: `id:2-6,34-37`
 
 ## Native jj commands
@@ -278,8 +274,7 @@ mine() & mutable()     # my mutable commits
 ### Hunk-level commit (selective commit from @)
 
 ```bash
-jj-hunk-tool hunks                         # list hunks
-jj-hunk-tool show <id>                     # inspect specific hunk
+jj-hunk-tool hunks                         # list hunks with line numbers
 jj-hunk-tool commit <id1> <id2> -m "msg"   # commit selected hunks
 # Remaining hunks stay in @
 ```
@@ -287,7 +282,7 @@ jj-hunk-tool commit <id1> <id2> -m "msg"   # commit selected hunks
 ### Hunk-level split of historical revision
 
 ```bash
-jj-hunk-tool hunks -r <rev> --full         # list with line numbers
+jj-hunk-tool hunks -r <rev>                # list with line numbers
 jj-hunk-tool commit <id>:1-20 -r <rev> -m "first part"
 # Rest stays in <rev>; descendants auto-rebased
 jj log -r 'conflicts()'                    # check for conflicts!

@@ -22,20 +22,12 @@ enum Command {
         /// Revision to diff (default: working copy)
         #[arg(short, long)]
         revision: Option<String>,
-        /// Show all lines with line numbers
+        /// Show only a brief preview of changed lines (no line numbers)
         #[arg(long)]
-        full: bool,
+        compact: bool,
         /// Filter to a specific file
         #[arg(long)]
         file: Option<String>,
-    },
-    /// Show details of a specific hunk
-    Show {
-        /// Hunk ID to show
-        hunk_id: String,
-        /// Revision to diff
-        #[arg(short, long)]
-        revision: Option<String>,
     },
     /// Output a patch for selected hunks
     Patch {
@@ -112,7 +104,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Hunks {
             revision,
-            full,
+            compact,
             file,
         } => {
             let raw = get_jj_diff(&revision)?;
@@ -148,12 +140,7 @@ fn main() -> Result<()> {
 
                 println!("{id} {}{func_part} (+{additions} -{deletions})", hunk.file);
 
-                if full {
-                    let width = hunk.lines.len().to_string().len();
-                    for (i, line) in hunk.lines.iter().enumerate() {
-                        println!("{:>w$}:{line}", i + 1, w = width);
-                    }
-                } else {
+                if compact {
                     let changed: Vec<&String> = hunk
                         .lines
                         .iter()
@@ -166,22 +153,13 @@ fn main() -> Result<()> {
                     if changed.len() > max_preview_lines {
                         println!("  ... (+{} more lines)", changed.len() - max_preview_lines);
                     }
+                } else {
+                    let width = hunk.lines.len().to_string().len();
+                    for (i, line) in hunk.lines.iter().enumerate() {
+                        println!("{:>w$}:{line}", i + 1, w = width);
+                    }
                 }
                 println!();
-            }
-        }
-        Command::Show { hunk_id, revision } => {
-            let raw = get_jj_diff(&revision)?;
-            let hunks = parse_diff(&raw);
-            let identified = assign_ids(&hunks);
-            let (_id, hunk) = identified
-                .iter()
-                .find(|(id, _)| id == &hunk_id)
-                .ok_or_else(|| anyhow::anyhow!("hunk not found: {hunk_id}"))?;
-            println!("{}", hunk.header);
-            let width = hunk.lines.len().to_string().len();
-            for (i, line) in hunk.lines.iter().enumerate() {
-                println!("{:>w$}:{line}", i + 1, w = width);
             }
         }
         Command::Patch {
