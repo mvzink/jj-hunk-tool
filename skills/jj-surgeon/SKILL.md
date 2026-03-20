@@ -50,7 +50,8 @@ jj log --no-pager -p --git -r <revset>
 ## jj-hunk-tool commands
 
 Use `jj-hunk-tool` for non-interactive hunk-level selection -- the one thing jj
-cannot do without an interactive editor.
+cannot do without an interactive editor. Each command mirrors its jj counterpart
+— just pass hunk IDs instead of `-i`.
 
 ```bash
 # List hunks with IDs, file paths, +/- counts, and numbered lines
@@ -64,21 +65,24 @@ jj-hunk-tool patch <id1> <id2:1-10> ...
 jj-hunk-tool patch <id>:5-30,40-50 -r <revset>
 jj-hunk-tool patch --reverse <id>
 
-# Commit selected hunks from @ (creates new parent, rest stays in @)
-jj-hunk-tool commit <id1> <id2> -m "message"
-jj-hunk-tool commit <id>:1-11 <id2> -m "partial commit"
+# Split selected hunks out of a revision (like jj split)
+jj-hunk-tool split <id1> <id2> -m "message"
+jj-hunk-tool split <id>:1-11 <id2> -r <revset> -m "split out"
+jj-hunk-tool split <id> -r <revset> -p   # parallel siblings
+jj-hunk-tool split <id> -A <rev>         # insert after
 
-# Split a non-@ revision (selected hunks split out, rest stays)
-jj-hunk-tool commit <id1> -r <revset> -m "split out"
+# Move selected hunks into another revision (like jj squash)
+jj-hunk-tool squash <id1> <id2> -m "squashed"
+jj-hunk-tool squash <id> -r <revset> -m "squash into parent"
+jj-hunk-tool squash <id> --from <rev> --into <rev> -m "move hunks"
 
-# Discard selected hunks from working copy
-jj-hunk-tool discard <id1> <id2>
-
-# Rewrite a revision in-place keeping only selected hunks
+# Rewrite a revision in-place keeping only selected hunks (like jj diffedit)
 jj-hunk-tool diffedit <id1> <id2> -r <revset>
 
-# Restore selected hunks from a revision (undo specific changes)
-jj-hunk-tool restore <id> --from <revset>
+# Undo selected hunks (like jj restore)
+jj-hunk-tool restore <id1> <id2>                 # default: undo from @
+jj-hunk-tool restore <id> -c <revset>            # undo from specific revision
+jj-hunk-tool restore <id> --from <rev> --into <rev>
 ```
 
 ### Hunk IDs
@@ -138,7 +142,7 @@ jj split path/to/file -m "these files" # non-interactive: split by file
 
 **Always pass `-m` to `jj split`.** Without it, jj opens `$EDITOR` for each
 resulting commit. For non-interactive hunk-level splitting, use
-`jj-hunk-tool commit -r`.
+`jj-hunk-tool split -r`.
 
 ### Rebasing and reordering
 
@@ -271,11 +275,11 @@ mine() & mutable()     # my mutable commits
 
 ## Workflows
 
-### Hunk-level commit (selective commit from @)
+### Hunk-level split (selective split from @)
 
 ```bash
 jj-hunk-tool hunks                         # list hunks with line numbers
-jj-hunk-tool commit <id1> <id2> -m "msg"   # commit selected hunks
+jj-hunk-tool split <id1> <id2> -m "msg"   # split selected hunks out
 # Remaining hunks stay in @
 ```
 
@@ -283,7 +287,7 @@ jj-hunk-tool commit <id1> <id2> -m "msg"   # commit selected hunks
 
 ```bash
 jj-hunk-tool hunks -r <rev>                # list with line numbers
-jj-hunk-tool commit <id>:1-20 -r <rev> -m "first part"
+jj-hunk-tool split <id>:1-20 -r <rev> -m "first part"
 # Rest stays in <rev>; descendants auto-rebased
 jj log -r 'conflicts()'                    # check for conflicts!
 ```
@@ -298,8 +302,17 @@ continuing — see
 ```bash
 jj file annotate src/main.rs               # find which change touched each line
 jj-hunk-tool hunks                         # list current hunks
-jj-hunk-tool commit <id> -m "fix bug"      # commit the fix
+jj-hunk-tool squash <id> --into <target> -m "fix bug"  # move fix directly
+# Or: split first, then squash
+jj-hunk-tool split <id> -m "fix bug"      # split the fix out
 jj squash --from @- --into <target>        # fold into the original change
+```
+
+### Discard specific hunks from working copy
+
+```bash
+jj-hunk-tool hunks                         # list hunks
+jj-hunk-tool restore <id1> <id2>           # undo those hunks (default: -c @)
 ```
 
 ### Auto-fixup with absorb
@@ -361,7 +374,7 @@ jj op restore <op-id>                      # restore to any point
 - `jj squash` without args squashes `@` into `@-`. With `--from`/`--into` you
   can squash between any two mutable commits.
 - After any history rewrite (`jj edit` + modify, `jj squash`, `jj rebase`,
-  `jj-hunk-tool commit -r`), check `jj log -r 'conflicts()'` for conflicts.
+  `jj-hunk-tool split -r`), check `jj log -r 'conflicts()'` for conflicts.
   Resolve them immediately before editing further descendants — cascading
   conflicts are much harder to fix. See
   [references/conflict-resolution.md](references/conflict-resolution.md).
