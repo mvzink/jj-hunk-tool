@@ -7,4 +7,5 @@ edition = "2024"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 git-surgeon = { git = "https://github.com/mvzink/git-surgeon.git", branch = "lib" }
+dialoguer = "0.11"
 tempfile = "3"

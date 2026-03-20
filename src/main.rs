@@ -129,9 +129,9 @@ enum Command {
         #[arg(long)]
         restore_descendants: bool,
     },
-    /// Install the jj-surgeon skill into Claude Code (~/.claude/commands/)
+    /// Install the jj-surgeon skill for AI coding agents
     InstallSkill {
-        /// Target directory (default: ~/.claude/commands)
+        /// Target directory (overrides agent selection)
         #[arg(long)]
         target: Option<String>,
     },
@@ -432,16 +432,50 @@ const REF_GIT_INTEROP: &str = include_str!("../skills/jj-surgeon/references/git-
 const REF_REVSET: &str = include_str!("../skills/jj-surgeon/references/revset-reference.md");
 const REF_TEMPLATE: &str = include_str!("../skills/jj-surgeon/references/template-reference.md");
 
-fn install_skill(target: Option<&str>) -> Result<()> {
-    let skills_dir = match target {
-        Some(t) => PathBuf::from(t),
-        None => {
-            let home = std::env::var("HOME")
-                .map_err(|_| anyhow::anyhow!("HOME not set"))?;
-            PathBuf::from(home).join(".claude").join("skills")
-        }
-    };
+struct AgentTarget {
+    label: &'static str,
+    /// Path relative to $HOME
+    rel_path: &'static str,
+}
 
+const AGENT_TARGETS: &[AgentTarget] = &[
+    AgentTarget { label: "Standard (~/.agents/skills) [Gemini, Codex, OpenCode]", rel_path: ".agents/skills" },
+    AgentTarget { label: "Claude Code (~/.claude/skills)", rel_path: ".claude/skills" },
+    AgentTarget { label: "Gemini CLI (~/.gemini/skills)", rel_path: ".gemini/skills" },
+    AgentTarget { label: "OpenCode (~/.config/opencode/skills)", rel_path: ".config/opencode/skills" },
+];
+
+fn install_skill(target: Option<&str>) -> Result<()> {
+    if let Some(t) = target {
+        install_skill_to(&PathBuf::from(t))?;
+        return Ok(());
+    }
+
+    let home = std::env::var("HOME")
+        .map_err(|_| anyhow::anyhow!("HOME not set"))?;
+    let home = PathBuf::from(home);
+
+    let items: Vec<&str> = AGENT_TARGETS.iter().map(|t| t.label).collect();
+
+    let selections = dialoguer::MultiSelect::new()
+        .with_prompt("Install jj-surgeon skill for")
+        .items(&items)
+        .defaults(&[true, true, false, false])
+        .interact()?;
+
+    if selections.is_empty() {
+        println!("No agents selected.");
+        return Ok(());
+    }
+
+    for idx in selections {
+        let skills_dir = home.join(AGENT_TARGETS[idx].rel_path);
+        install_skill_to(&skills_dir)?;
+    }
+    Ok(())
+}
+
+fn install_skill_to(skills_dir: &PathBuf) -> Result<()> {
     let skill_dir = skills_dir.join("jj-surgeon");
     let refs_dir = skill_dir.join("references");
     std::fs::create_dir_all(&refs_dir)?;
