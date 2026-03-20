@@ -114,42 +114,6 @@ pub fn split_hunks(
     Ok(())
 }
 
-/// Discard selected hunks by reverse-applying the patch directly.
-pub fn discard_hunks(specs: &[HunkSpec<'_>], _revision: &Option<String>) -> Result<()> {
-    // reverse=true so partial-range slicing treats out-of-range lines correctly
-    // for the working copy state (keeps existing additions as context, drops
-    // non-existent deletions)
-    let patch_content = build_combined_patch(specs, true)?;
-    if patch_content.is_empty() {
-        bail!("no hunks selected");
-    }
-
-    // Apply in reverse directly to the working copy
-    let mut child = Command::new("patch")
-        .args(["-p1", "--silent", "--reverse"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .context("running patch")?;
-
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(patch_content.as_bytes())
-        .context("writing to patch stdin")?;
-
-    let status = child.wait().context("waiting for patch")?;
-    if !status.success() {
-        bail!("patch --reverse failed (exit code: {:?})", status.code());
-    }
-
-    for (id, _, _) in specs {
-        eprintln!("discarded {id}");
-    }
-
-    Ok(())
-}
-
 /// Rewrite a revision in-place, keeping only the selected hunks.
 pub fn diffedit_hunks(specs: &[HunkSpec<'_>], revision: &str) -> Result<()> {
     let patch_content = build_combined_patch(specs, false)?;

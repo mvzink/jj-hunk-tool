@@ -63,14 +63,6 @@ enum Command {
         #[arg(short = 'B', long, num_args = 1..)]
         insert_before: Vec<String>,
     },
-    /// Discard selected hunks from the working copy
-    Discard {
-        /// Hunk IDs to discard
-        hunk_ids: Vec<String>,
-        /// Revision to discard from
-        #[arg(short, long)]
-        revision: Option<String>,
-    },
     /// Rewrite hunks in a revision in-place (via jj diffedit --tool)
     Diffedit {
         /// Hunk IDs to keep (all others are removed from the revision)
@@ -233,13 +225,6 @@ fn main() -> Result<()> {
                 parallel,
                 &extra_refs,
             )?;
-        }
-        Command::Discard { hunk_ids, revision } => {
-            let raw = get_jj_diff(&revision)?;
-            let hunks = parse_diff(&raw);
-            let identified = assign_ids(&hunks);
-            let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
-            tool::discard_hunks(&specs, &revision)?;
         }
         Command::Diffedit { hunk_ids, revision } => {
             let rev = revision.as_deref().unwrap_or("@");
