@@ -95,13 +95,22 @@ enum Command {
         #[arg(short = 'B', long, num_args = 1..)]
         insert_before: Vec<String>,
     },
-    /// Rewrite hunks in a revision in-place (via jj diffedit --tool)
+    /// Rewrite hunks in a revision in-place (like jj diffedit, but with hunk IDs)
     Diffedit {
         /// Hunk IDs to keep (all others are removed from the revision)
         hunk_ids: Vec<String>,
-        /// Revision to edit
+        /// Revision to edit (default: @)
         #[arg(short, long)]
         revision: Option<String>,
+        /// Show changes from this revision
+        #[arg(short, long)]
+        from: Option<String>,
+        /// Edit changes in this revision
+        #[arg(short = 't', long)]
+        to: Option<String>,
+        /// Preserve content (not diff) when rebasing descendants
+        #[arg(long)]
+        restore_descendants: bool,
     },
     /// Undo selected hunks from a revision (like jj restore, but with hunk IDs)
     Restore {
@@ -329,13 +338,39 @@ fn main() -> Result<()> {
             let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
             tool::squash_hunks(&specs, &extra_refs)?;
         }
-        Command::Diffedit { hunk_ids, revision } => {
-            let rev = revision.as_deref().unwrap_or("@");
-            let raw = get_jj_diff(&Some(rev.to_string()))?;
+        Command::Diffedit {
+            hunk_ids,
+            revision,
+            from,
+            to,
+            restore_descendants,
+        } => {
+            let (raw, jj_args) = if from.is_some() || to.is_some() {
+                let f = from.as_deref().unwrap_or("@");
+                let t = to.as_deref().unwrap_or("@");
+                let raw = diff::get_jj_diff_from_to(f, t)?;
+                let mut args = vec![
+                    "--from".to_string(), f.to_string(),
+                    "--to".to_string(), t.to_string(),
+                ];
+                if restore_descendants {
+                    args.push("--restore-descendants".into());
+                }
+                (raw, args)
+            } else {
+                let rev = revision.as_deref().unwrap_or("@");
+                let raw = get_jj_diff(&Some(rev.to_string()))?;
+                let mut args = vec!["-r".to_string(), rev.to_string()];
+                if restore_descendants {
+                    args.push("--restore-descendants".into());
+                }
+                (raw, args)
+            };
             let hunks = parse_diff(&raw);
             let identified = assign_ids(&hunks);
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
-            tool::diffedit_hunks(&specs, rev)?;
+            let jj_arg_refs: Vec<&str> = jj_args.iter().map(|s| s.as_str()).collect();
+            tool::diffedit_hunks(&specs, &jj_arg_refs)?;
         }
         Command::Restore {
             hunk_ids,

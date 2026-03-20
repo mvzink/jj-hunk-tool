@@ -126,12 +126,14 @@ pub fn squash_hunks(specs: &[HunkSpec<'_>], extra_args: &[&str]) -> Result<()> {
 }
 
 /// Rewrite a revision in-place, keeping only the selected hunks.
-pub fn diffedit_hunks(specs: &[HunkSpec<'_>], revision: &str) -> Result<()> {
+pub fn diffedit_hunks(specs: &[HunkSpec<'_>], jj_extra_args: &[&str]) -> Result<()> {
     let patch_content = build_combined_patch(specs, false)?;
     if patch_content.is_empty() {
         bail!("no hunks selected");
     }
-    run_jj_with_tool(&["diffedit", "-r", revision], &patch_content, false)
+    let mut args = vec!["diffedit"];
+    args.extend_from_slice(jj_extra_args);
+    run_jj_with_tool(&args, &patch_content, false)
 }
 
 /// Restore (undo) selected hunks. The caller provides the jj-specific args
