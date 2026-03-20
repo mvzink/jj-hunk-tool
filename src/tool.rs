@@ -83,31 +83,32 @@ fn run_jj_with_tool(jj_args: &[&str], patch_content: &str, reverse: bool) -> Res
     Ok(())
 }
 
-/// Commit selected hunks by writing a patch and invoking jj commit --tool.
-pub fn commit_hunks(
+/// Split selected hunks out of a revision using jj split --tool.
+pub fn split_hunks(
     specs: &[HunkSpec<'_>],
-    revision: &Option<String>,
+    revision: Option<&str>,
     message: Option<&str>,
+    parallel: bool,
+    extra_args: &[&str],
 ) -> Result<()> {
     let patch_content = build_combined_patch(specs, false)?;
     if patch_content.is_empty() {
         bail!("no hunks selected");
     }
 
-    let mut args: Vec<&str> = Vec::new();
-    if revision.is_some() {
-        args.push("split");
-        if let Some(rev) = revision {
-            args.extend_from_slice(&["-r", rev]);
-        }
-    } else {
-        args.push("commit");
+    let mut args: Vec<&str> = vec!["split"];
+    if let Some(rev) = revision {
+        args.extend_from_slice(&["-r", rev]);
     }
     let msg_storage;
     if let Some(msg) = message {
         msg_storage = msg.to_string();
         args.extend_from_slice(&["-m", &msg_storage]);
     }
+    if parallel {
+        args.push("--parallel");
+    }
+    args.extend_from_slice(extra_args);
 
     run_jj_with_tool(&args, &patch_content, false)?;
     Ok(())

@@ -40,16 +40,28 @@ enum Command {
         #[arg(long)]
         reverse: bool,
     },
-    /// Commit selected hunks into a new change
-    Commit {
-        /// Hunk IDs to commit
+    /// Split selected hunks out of a revision (like jj split, but with hunk IDs)
+    Split {
+        /// Hunk IDs for the first (split-off) commit
         hunk_ids: Vec<String>,
-        /// Revision to split from
-        #[arg(short, long)]
-        revision: Option<String>,
-        /// Commit message
+        /// Revision to split
+        #[arg(short, long, default_value = "@")]
+        revision: String,
+        /// Description for the first commit
         #[arg(short, long)]
         message: Option<String>,
+        /// Create two parallel siblings instead of parent and child
+        #[arg(short, long)]
+        parallel: bool,
+        /// Rebase selected changes onto these revisions
+        #[arg(short, long, num_args = 1..)]
+        onto: Vec<String>,
+        /// Insert selected changes after these revisions
+        #[arg(short = 'A', long, num_args = 1..)]
+        insert_after: Vec<String>,
+        /// Insert selected changes before these revisions
+        #[arg(short = 'B', long, num_args = 1..)]
+        insert_before: Vec<String>,
     },
     /// Discard selected hunks from the working copy
     Discard {
@@ -187,16 +199,40 @@ fn main() -> Result<()> {
                 print!("{}", git_surgeon::patch::build_patch(&patched));
             }
         }
-        Command::Commit {
+        Command::Split {
             hunk_ids,
             revision,
             message,
+            parallel,
+            onto,
+            insert_after,
+            insert_before,
         } => {
-            let raw = get_jj_diff(&revision)?;
+            let raw = get_jj_diff(&Some(revision.clone()))?;
             let hunks = parse_diff(&raw);
             let identified = assign_ids(&hunks);
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
-            tool::commit_hunks(&specs, &revision, message.as_deref())?;
+            let mut extra_args: Vec<String> = Vec::new();
+            for rev in &onto {
+                extra_args.push("-o".into());
+                extra_args.push(rev.clone());
+            }
+            for rev in &insert_after {
+                extra_args.push("-A".into());
+                extra_args.push(rev.clone());
+            }
+            for rev in &insert_before {
+                extra_args.push("-B".into());
+                extra_args.push(rev.clone());
+            }
+            let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
+            tool::split_hunks(
+                &specs,
+                Some(&revision),
+                message.as_deref(),
+                parallel,
+                &extra_refs,
+            )?;
         }
         Command::Discard { hunk_ids, revision } => {
             let raw = get_jj_diff(&revision)?;
