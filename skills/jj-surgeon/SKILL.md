@@ -14,6 +14,11 @@ staging area. All file changes are immediately part of `@`.
 **"Clean" means an empty `@`.** When `@` has no diff vs its parent, the working
 copy is clean. You do NOT need to `jj abandon` an empty `@` -- it is harmless
 and jj creates a new empty `@` automatically after operations that consume it.
+**Always finish your work with a clean `@`.** Use `jj commit -m "message"`
+(not `jj describe`) when you're done with a change — `jj commit` finalizes `@`
+and creates a new empty working copy on top. If you use `jj describe` instead,
+`@` still contains your changes and you're still "editing" it. This is the jj
+equivalent of leaving a dirty working copy in Git.
 
 **Change IDs vs commit IDs.** Every commit has two identifiers:
 - *Change ID* -- stable across rewrites (rebase, amend, squash). Shown as
@@ -361,6 +366,9 @@ jj op restore <op-id>                      # restore to any point
 ## Common pitfalls for agents
 
 - Do NOT `jj abandon @` to "clean up" an empty working copy. It's normal.
+- **Always leave `@` empty when you're done working.** Use `jj commit -m "msg"`
+  to finalize a change — NOT `jj describe`, which leaves your changes in `@`.
+  Leaving a non-empty `@` is the jj equivalent of a dirty working copy in Git.
 - Do NOT use `git` commands in a jj repo. Always use `jj`.
 - Always pass `--git --no-pager` when viewing diffs.
 - Always pass `--no-pager` to `jj log`, `jj op log`, `jj bookmark list`.
