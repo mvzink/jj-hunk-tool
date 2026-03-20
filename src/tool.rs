@@ -123,16 +123,15 @@ pub fn diffedit_hunks(specs: &[HunkSpec<'_>], revision: &str) -> Result<()> {
     run_jj_with_tool(&["diffedit", "-r", revision], &patch_content, false)
 }
 
-/// Restore selected hunks from one revision into another.
-pub fn restore_hunks(specs: &[HunkSpec<'_>], from: &str, to: Option<&str>) -> Result<()> {
+/// Restore (undo) selected hunks. The caller provides the jj-specific args
+/// (e.g. ["--changes-in", "@"] or ["--from", "x", "--into", "y"]).
+pub fn restore_hunks(specs: &[HunkSpec<'_>], jj_extra_args: &[&str]) -> Result<()> {
     let patch_content = build_combined_patch(specs, false)?;
     if patch_content.is_empty() {
         bail!("no hunks selected");
     }
-    let mut args = vec!["restore", "--changes-in", from];
-    if let Some(target) = to {
-        args.extend_from_slice(&["--to", target]);
-    }
+    let mut args = vec!["restore"];
+    args.extend_from_slice(jj_extra_args);
     run_jj_with_tool(&args, &patch_content, true)
 }
 

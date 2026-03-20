@@ -18,3 +18,15 @@ pub fn get_jj_diff(revision: &Option<String>) -> Result<String> {
     }
     Ok(String::from_utf8(output.stdout)?)
 }
+
+/// Run `jj diff --git --from FROM --to TO` and return the raw output.
+pub fn get_jj_diff_from_to(from: &str, to: &str) -> Result<String> {
+    let output = Command::new("jj")
+        .args(["diff", "--git", "--no-pager", "--from", from, "--to", to])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("jj diff failed: {stderr}");
+    }
+    Ok(String::from_utf8(output.stdout)?)
+}

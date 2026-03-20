@@ -71,16 +71,22 @@ enum Command {
         #[arg(short, long)]
         revision: Option<String>,
     },
-    /// Restore selected hunks from a revision (via jj restore --tool)
+    /// Undo selected hunks from a revision (like jj restore, but with hunk IDs)
     Restore {
-        /// Hunk IDs to restore
+        /// Hunk IDs to undo/restore
         hunk_ids: Vec<String>,
-        /// Source revision to restore from
+        /// Revision to restore from (source)
+        #[arg(short, long)]
+        from: Option<String>,
+        /// Revision to restore into (destination)
+        #[arg(short = 't', long)]
+        into: Option<String>,
+        /// Undo changes in this revision (default: @)
+        #[arg(short, long)]
+        changes_in: Option<String>,
+        /// Preserve content (not diff) when rebasing descendants
         #[arg(long)]
-        from: String,
-        /// Target revision to restore into (default: @)
-        #[arg(long)]
-        to: Option<String>,
+        restore_descendants: bool,
     },
     /// Install the jj-surgeon skill into Claude Code (~/.claude/commands/)
     InstallSkill {
@@ -234,12 +240,45 @@ fn main() -> Result<()> {
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
             tool::diffedit_hunks(&specs, rev)?;
         }
-        Command::Restore { hunk_ids, from, to } => {
-            let raw = get_jj_diff(&Some(from.clone()))?;
+        Command::Restore {
+            hunk_ids,
+            from,
+            into,
+            changes_in,
+            restore_descendants,
+        } => {
+            // Determine which diff to inspect and what jj args to use.
+            // Default (no flags) = --changes-in @
+            let (raw, jj_args) = if let Some(ref ci) = changes_in {
+                let raw = get_jj_diff(&Some(ci.clone()))?;
+                let mut args = vec!["--changes-in".to_string(), ci.clone()];
+                if restore_descendants {
+                    args.push("--restore-descendants".into());
+                }
+                (raw, args)
+            } else if from.is_some() || into.is_some() {
+                let f = from.as_deref().unwrap_or("@");
+                let t = into.as_deref().unwrap_or("@");
+                let raw = diff::get_jj_diff_from_to(f, t)?;
+                let mut args = vec!["--from".to_string(), f.to_string(), "--into".to_string(), t.to_string()];
+                if restore_descendants {
+                    args.push("--restore-descendants".into());
+                }
+                (raw, args)
+            } else {
+                // Default: --changes-in @
+                let raw = get_jj_diff(&Some("@".to_string()))?;
+                let mut args = vec!["--changes-in".to_string(), "@".to_string()];
+                if restore_descendants {
+                    args.push("--restore-descendants".into());
+                }
+                (raw, args)
+            };
             let hunks = parse_diff(&raw);
             let identified = assign_ids(&hunks);
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
-            tool::restore_hunks(&specs, &from, to.as_deref())?;
+            let jj_arg_refs: Vec<&str> = jj_args.iter().map(|s| s.as_str()).collect();
+            tool::restore_hunks(&specs, &jj_arg_refs)?;
         }
         Command::InstallSkill { target } => {
             install_skill(target.as_deref())?;
