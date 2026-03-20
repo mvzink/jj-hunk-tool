@@ -114,6 +114,17 @@ pub fn split_hunks(
     Ok(())
 }
 
+/// Squash selected hunks from source into destination using jj squash --tool.
+pub fn squash_hunks(specs: &[HunkSpec<'_>], extra_args: &[&str]) -> Result<()> {
+    let patch_content = build_combined_patch(specs, false)?;
+    if patch_content.is_empty() {
+        bail!("no hunks selected");
+    }
+    let mut args = vec!["squash"];
+    args.extend_from_slice(extra_args);
+    run_jj_with_tool(&args, &patch_content, false)
+}
+
 /// Rewrite a revision in-place, keeping only the selected hunks.
 pub fn diffedit_hunks(specs: &[HunkSpec<'_>], revision: &str) -> Result<()> {
     let patch_content = build_combined_patch(specs, false)?;

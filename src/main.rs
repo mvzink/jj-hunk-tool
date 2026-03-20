@@ -63,6 +63,38 @@ enum Command {
         #[arg(short = 'B', long, num_args = 1..)]
         insert_before: Vec<String>,
     },
+    /// Move selected hunks into another revision (like jj squash, but with hunk IDs)
+    Squash {
+        /// Hunk IDs to squash (move to destination)
+        hunk_ids: Vec<String>,
+        /// Squash this revision into its parent (shorthand for --from)
+        #[arg(short, long)]
+        revision: Option<String>,
+        /// Source revision(s) to squash from (default: @)
+        #[arg(short, long, num_args = 1..)]
+        from: Vec<String>,
+        /// Destination revision to squash into
+        #[arg(short = 't', long, alias = "to")]
+        into: Option<String>,
+        /// Description for the destination revision
+        #[arg(short, long)]
+        message: Option<String>,
+        /// Use the description of the destination revision
+        #[arg(short = 'u', long)]
+        use_destination_message: bool,
+        /// Don't abandon the source revision if it becomes empty
+        #[arg(short, long)]
+        keep_emptied: bool,
+        /// Rebase squashed changes onto these revisions
+        #[arg(short, long, num_args = 1..)]
+        onto: Vec<String>,
+        /// Insert squashed changes after these revisions
+        #[arg(short = 'A', long, num_args = 1..)]
+        insert_after: Vec<String>,
+        /// Insert squashed changes before these revisions
+        #[arg(short = 'B', long, num_args = 1..)]
+        insert_before: Vec<String>,
+    },
     /// Rewrite hunks in a revision in-place (via jj diffedit --tool)
     Diffedit {
         /// Hunk IDs to keep (all others are removed from the revision)
@@ -231,6 +263,71 @@ fn main() -> Result<()> {
                 parallel,
                 &extra_refs,
             )?;
+        }
+        Command::Squash {
+            hunk_ids,
+            revision,
+            from,
+            into,
+            message,
+            use_destination_message,
+            keep_emptied,
+            onto,
+            insert_after,
+            insert_before,
+        } => {
+            // Determine source revision for the diff.
+            // -r REV: squash REV into its parent (diff = REV)
+            // --from: diff = first from revision (multiple froms possible)
+            // default: diff = @
+            let diff_rev = if let Some(ref rev) = revision {
+                rev.clone()
+            } else if !from.is_empty() {
+                from[0].clone()
+            } else {
+                "@".to_string()
+            };
+            let raw = get_jj_diff(&Some(diff_rev))?;
+            let hunks = parse_diff(&raw);
+            let identified = assign_ids(&hunks);
+            let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
+            let mut extra_args: Vec<String> = Vec::new();
+            if let Some(ref rev) = revision {
+                extra_args.push("-r".into());
+                extra_args.push(rev.clone());
+            }
+            for f in &from {
+                extra_args.push("--from".into());
+                extra_args.push(f.clone());
+            }
+            if let Some(ref t) = into {
+                extra_args.push("--into".into());
+                extra_args.push(t.clone());
+            }
+            if let Some(ref msg) = message {
+                extra_args.push("-m".into());
+                extra_args.push(msg.clone());
+            }
+            if use_destination_message {
+                extra_args.push("-u".into());
+            }
+            if keep_emptied {
+                extra_args.push("-k".into());
+            }
+            for rev in &onto {
+                extra_args.push("-o".into());
+                extra_args.push(rev.clone());
+            }
+            for rev in &insert_after {
+                extra_args.push("-A".into());
+                extra_args.push(rev.clone());
+            }
+            for rev in &insert_before {
+                extra_args.push("-B".into());
+                extra_args.push(rev.clone());
+            }
+            let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
+            tool::squash_hunks(&specs, &extra_refs)?;
         }
         Command::Diffedit { hunk_ids, revision } => {
             let rev = revision.as_deref().unwrap_or("@");
