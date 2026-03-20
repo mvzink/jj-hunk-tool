@@ -119,8 +119,9 @@ jj absorb                               # auto-distribute @ changes into ancesto
 jj absorb --from <rev>                  # absorb from specific revision
 ```
 
-**Always pass `-m` to `jj squash`.** Without it, jj opens `$EDITOR` to compose
-a description from the two commits being merged.
+**Always pass `-m` to `jj squash`** unless the user explicitly asks to compose
+the message in their editor. Without `-m`, jj opens `$EDITOR`, which disrupts
+the user's workflow.
 
 `jj absorb` is extremely powerful: it looks at each changed line, finds the
 mutable ancestor that last touched it, and moves the change there. Ambiguous
@@ -140,9 +141,10 @@ jj split -r <rev> -m "first half"      # interactive split of any revision
 jj split path/to/file -m "these files" # non-interactive: split by file
 ```
 
-**Always pass `-m` to `jj split`.** Without it, jj opens `$EDITOR` for each
-resulting commit. For non-interactive hunk-level splitting, use
-`jj-hunk-tool split -r`.
+**Always pass `-m` to `jj split`** unless the user explicitly asks to compose
+the message in their editor. Without `-m`, jj opens `$EDITOR` for each
+resulting commit, disrupting the user's workflow. For non-interactive
+hunk-level splitting, use `jj-hunk-tool split -r`.
 
 ### Rebasing and reordering
 
@@ -363,9 +365,10 @@ jj op restore <op-id>                      # restore to any point
 - Always pass `--git --no-pager` when viewing diffs.
 - Always pass `--no-pager` to `jj log`, `jj op log`, `jj bookmark list`.
 - **Always pass `-m "message"` to `jj commit`, `jj describe`, `jj squash`,
-  `jj split`, and any other command that accepts it.** Omitting `-m` opens
-  `$EDITOR`, which hangs in non-interactive contexts and disrupts the user.
-  This applies even when using `--from`/`--into` with squash.
+  `jj split`, and any other command that sets a commit message** — unless the
+  user explicitly asks to write the message in their editor. Omitting `-m`
+  opens `$EDITOR`, which disrupts the user's workflow. This applies even when
+  using `--from`/`--into` with squash.
 - `jj diff` with no `-r` shows `@` vs parent. Use `-r <rev>` for other revisions.
 - After `jj commit -m "msg"`, the described change is `@-` (the parent). `@` is
   the new empty working copy.
