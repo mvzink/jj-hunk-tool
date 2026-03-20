@@ -236,14 +236,23 @@ fn hunks_multiple_files() {
 }
 
 #[test]
-fn hunks_show_subcommand_removed() {
+fn hunks_commit_subcommand_removed() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "line1\n");
     repo.write_file("a.txt", "line1\nchanged\n");
 
-    let id = repo.get_single_hunk_id(&[]);
-    let err = repo.tool(&["show", &id]);
-    assert!(err.is_err(), "show subcommand should not exist");
+    let err = repo.tool(&["commit", "abc1234"]);
+    assert!(err.is_err(), "commit subcommand should not exist");
+}
+
+#[test]
+fn hunks_discard_subcommand_removed() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "line1\n");
+    repo.write_file("a.txt", "line1\nchanged\n");
+
+    let err = repo.tool(&["discard", "abc1234"]);
+    assert!(err.is_err(), "discard subcommand should not exist");
 }
 
 #[test]
@@ -368,15 +377,8 @@ fn hunks_id_stability() {
 #[test]
 fn hunks_duplicate_ids_get_suffixes() {
     let repo = TestRepo::new();
-    // Create two files with identical content and identical changes
-    // so hunk hashes collide
     repo.commit_file("a.txt", "same\n");
     repo.commit_file("b.txt", "same\n");
-    // Hmm, IDs hash file path too, so they won't collide with different paths.
-    // To get a real collision we'd need same file path which is impossible.
-    // The suffix mechanism is for same-file hunks with identical content.
-    // This is extremely hard to trigger naturally. Skip the assertion on suffix
-    // and just verify the mechanism doesn't crash with many hunks.
     repo.write_file("a.txt", "same\nchanged\n");
     repo.write_file("b.txt", "same\nchanged\n");
 
@@ -439,7 +441,6 @@ fn hunks_default_shows_line_numbers() {
 
     let output = repo.tool_ok(&["hunks"]);
     assert!(output.contains("1:"), "default should have line numbers");
-    // Should include context lines
     assert!(
         output.contains("line1") || output.contains("line3"),
         "default should have context"
@@ -473,9 +474,7 @@ fn hunks_compact_mode() {
     repo.write_file("a.txt", "line1\nchanged\nline3\n");
 
     let output = repo.tool_ok(&["hunks", "--compact"]);
-    // Compact should NOT have line numbers
     assert!(!output.contains("1:"), "compact should not have line numbers");
-    // But should still show changed lines
     assert!(output.contains("+changed") || output.contains("-line2"));
 }
 
@@ -527,10 +526,8 @@ fn patch_multiple_hunks_same_file() {
     args.extend_from_slice(&all_ids);
     let patch = repo.tool_ok(&args);
 
-    // Should have file headers
     assert!(patch.contains("--- a/f.txt"));
     assert!(patch.contains("+++ b/f.txt"));
-    // Should have multiple @@ sections
     let at_count = patch.matches("@@").count();
     assert!(
         at_count >= 4,
@@ -566,7 +563,6 @@ fn patch_reverse_whole_hunk() {
     let id = repo.get_single_hunk_id(&[]);
     let patch = repo.tool_ok(&["patch", "--reverse", &id]);
     assert!(patch.contains("a.txt"));
-    // For whole-hunk reverse, the patch keeps original +/- (applied with patch --reverse)
     assert!(patch.contains("+added"));
 }
 
@@ -577,11 +573,9 @@ fn patch_inline_range() {
     repo.write_file("a.txt", "LINE1\nLINE2\nLINE3\nLINE4\n");
 
     let id = repo.get_single_hunk_id(&[]);
-    // Only include lines 1-2 of the hunk (out of 8 change lines: 4 deletions + 4 additions)
     let spec = format!("{id}:1-4");
     let patch = repo.tool_ok(&["patch", &spec]);
     assert!(patch.contains("@@"));
-    // The sliced patch should exist and be valid unified diff
     assert!(patch.contains("---") && patch.contains("+++"));
 }
 
@@ -690,7 +684,6 @@ fn patch_output_is_applicable() {
     let id = repo.get_single_hunk_id(&[]);
     let patch = repo.tool_ok(&["patch", &id]);
 
-    // Reset file to original, then apply the patch
     repo.write_file("a.txt", "line1\nline2\nline3\n");
     let status = Command::new("patch")
         .args(["-p1", "--silent"])
@@ -701,7 +694,6 @@ fn patch_output_is_applicable() {
         .stdin
         .unwrap()
         .write_all(patch.as_bytes());
-    // Just verify patch command accepts it
     assert!(status.is_ok());
 }
 
@@ -729,41 +721,39 @@ fn patch_deleted_file() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// commit
+// split (was: commit)
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn commit_single_hunk_with_message() {
+fn split_single_hunk_with_message() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "original\n");
     repo.write_file("a.txt", "modified\n");
 
     let id = repo.get_single_hunk_id(&[]);
-    repo.tool_ok(&["commit", &id, "-m", "my commit"]);
+    repo.tool_ok(&["split", &id, "-m", "my split"]);
 
     let parent_diff = repo.jj_diff("@-");
     assert!(parent_diff.contains("a.txt"));
-    // Check message
     let desc = repo.jj(&["log", "-r", "@-", "-T", "description", "--no-graph"]);
-    assert!(desc.contains("my commit"));
+    assert!(desc.contains("my split"));
 }
 
 #[test]
-fn commit_single_hunk_no_message() {
+fn split_single_hunk_no_message() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "original\n");
     repo.write_file("a.txt", "modified\n");
 
     let id = repo.get_single_hunk_id(&[]);
-    // No -m flag — jj commit without message should still work (empty description)
-    repo.tool_ok(&["commit", &id]);
+    repo.tool_ok(&["split", &id]);
 
     let parent_diff = repo.jj_diff("@-");
     assert!(parent_diff.contains("a.txt"));
 }
 
 #[test]
-fn commit_multiple_hunks_different_files() {
+fn split_multiple_hunks_different_files() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "a\n");
     repo.commit_file("b.txt", "b\n");
@@ -772,7 +762,7 @@ fn commit_multiple_hunks_different_files() {
 
     let a_id = repo.get_hunk_id_for_file("a.txt", &[]);
     let b_id = repo.get_hunk_id_for_file("b.txt", &[]);
-    repo.tool_ok(&["commit", &a_id, &b_id, "-m", "both files"]);
+    repo.tool_ok(&["split", &a_id, &b_id, "-m", "both files"]);
 
     let parent_diff = repo.jj_diff("@-");
     assert!(parent_diff.contains("a.txt"));
@@ -780,7 +770,7 @@ fn commit_multiple_hunks_different_files() {
 }
 
 #[test]
-fn commit_one_of_two_hunks_other_remains() {
+fn split_one_of_two_hunks_other_remains() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "a\n");
     repo.commit_file("b.txt", "b\n");
@@ -788,46 +778,43 @@ fn commit_one_of_two_hunks_other_remains() {
     repo.write_file("b.txt", "b changed\n");
 
     let a_id = repo.get_hunk_id_for_file("a.txt", &[]);
-    repo.tool_ok(&["commit", &a_id, "-m", "only a"]);
+    repo.tool_ok(&["split", &a_id, "-m", "only a"]);
 
-    // Parent should have only a.txt
     let parent_diff = repo.jj_diff("@-");
     assert!(parent_diff.contains("a.txt"));
     assert!(!parent_diff.contains("b.txt"));
 
-    // Working copy should still have b.txt change
     let wc_diff = repo.jj_diff("@");
     assert!(wc_diff.contains("b.txt"));
     assert!(!wc_diff.contains("a.txt"));
 }
 
 #[test]
-fn commit_with_inline_range() {
+fn split_with_inline_range() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "line1\nline2\nline3\nline4\n");
     repo.write_file("a.txt", "LINE1\nLINE2\nline3\nline4\n");
 
     let id = repo.get_single_hunk_id(&[]);
-    // Commit only part of the hunk
     let spec = format!("{id}:1-2");
-    repo.tool_ok(&["commit", &spec, "-m", "partial"]);
+    repo.tool_ok(&["split", &spec, "-m", "partial"]);
 
     let desc = repo.jj(&["log", "-r", "@-", "-T", "description", "--no-graph"]);
     assert!(desc.contains("partial"));
 }
 
 #[test]
-fn commit_invalid_id() {
+fn split_invalid_id() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "x\n");
     repo.write_file("a.txt", "y\n");
 
-    let err = repo.tool_err(&["commit", "invalid", "-m", "nope"]);
+    let err = repo.tool_err(&["split", "invalid", "-m", "nope"]);
     assert!(err.contains("hunk not found"));
 }
 
 #[test]
-fn commit_with_revision_split() {
+fn split_non_working_copy_revision() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "a\n");
     repo.commit_file("b.txt", "b\n");
@@ -835,59 +822,55 @@ fn commit_with_revision_split() {
     repo.write_file("b.txt", "b changed\n");
     repo.jj(&["commit", "-m", "change both"]);
 
-    // Split @- by picking only the a.txt hunk
     let a_id = repo.get_hunk_id_for_file("a.txt", &["-r", "@-"]);
-    repo.tool_ok(&["commit", &a_id, "-r", "@-", "-m", "just a"]);
-
-    // There should now be a commit with just a.txt in the history
-    // (jj split creates two commits from the original)
+    repo.tool_ok(&["split", &a_id, "-r", "@-", "-m", "just a"]);
 }
 
 #[test]
-fn commit_all_hunks_working_copy_empty() {
+fn split_all_hunks_working_copy_empty() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "a\n");
     repo.write_file("a.txt", "a changed\n");
 
     let id = repo.get_single_hunk_id(&[]);
-    repo.tool_ok(&["commit", &id, "-m", "everything"]);
+    repo.tool_ok(&["split", &id, "-m", "everything"]);
 
     let wc_diff = repo.jj_diff("@");
     assert!(
         wc_diff.trim().is_empty(),
-        "working copy should be empty after committing all hunks"
+        "working copy should be empty after splitting all hunks"
     );
 }
 
 #[test]
-fn commit_new_file() {
+fn split_new_file() {
     let repo = TestRepo::new();
     repo.write_file("dummy.txt", "x\n");
     repo.jj(&["commit", "-m", "init"]);
     repo.write_file("brand_new.txt", "content\n");
 
     let id = repo.get_hunk_id_for_file("brand_new.txt", &[]);
-    repo.tool_ok(&["commit", &id, "-m", "add new file"]);
+    repo.tool_ok(&["split", &id, "-m", "add new file"]);
 
     let parent_diff = repo.jj_diff("@-");
     assert!(parent_diff.contains("brand_new.txt"));
 }
 
 #[test]
-fn commit_deleted_file() {
+fn split_deleted_file() {
     let repo = TestRepo::new();
     repo.commit_file("doomed.txt", "content\n");
     std::fs::remove_file(repo.path().join("doomed.txt")).unwrap();
 
     let id = repo.get_hunk_id_for_file("doomed.txt", &[]);
-    repo.tool_ok(&["commit", &id, "-m", "remove file"]);
+    repo.tool_ok(&["split", &id, "-m", "remove file"]);
 
     let parent_diff = repo.jj_diff("@-");
     assert!(parent_diff.contains("doomed.txt"));
 }
 
 #[test]
-fn commit_multiple_hunks_same_file() {
+fn split_multiple_hunks_same_file() {
     let repo = TestRepo::new();
     let content = repo.write_two_hunk_file("f.txt");
     repo.jj(&["commit", "-m", "init"]);
@@ -897,154 +880,89 @@ fn commit_multiple_hunks_same_file() {
     let ids = repo.get_hunk_ids(&[]);
     assert!(ids.len() >= 2);
 
-    // Commit only the first hunk
-    repo.tool_ok(&["commit", &ids[0].0, "-m", "first hunk only"]);
+    repo.tool_ok(&["split", &ids[0].0, "-m", "first hunk only"]);
 
-    // Parent should have partial change
     let parent_diff = repo.jj_diff("@-");
     assert!(parent_diff.contains("f.txt"));
 
-    // Working copy should still have the other hunk
     let wc_diff = repo.jj_diff("@");
     assert!(wc_diff.contains("f.txt"));
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// discard
-// ──────────────────────────────────────────────────────────────────────────────
-
 #[test]
-fn discard_single_hunk() {
+fn split_forwards_jj_output() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "original\n");
     repo.write_file("a.txt", "modified\n");
 
     let id = repo.get_single_hunk_id(&[]);
-    repo.tool_ok(&["discard", &id]);
-
-    assert_eq!(repo.read_file("a.txt"), "original\n");
+    let (_stdout, stderr) = repo.tool_output(&["split", &id, "-m", "test split"]);
+    assert!(!stderr.is_empty(), "split should forward jj's output");
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// squash
+// ──────────────────────────────────────────────────────────────────────────────
+
 #[test]
-fn discard_one_of_two_hunks() {
+fn squash_single_hunk_into_parent() {
     let repo = TestRepo::new();
-    let content = repo.write_two_hunk_file("f.txt");
-    repo.jj(&["commit", "-m", "init"]);
-    let new_content = content.replace("top", "TOP").replace("bottom", "BOTTOM");
-    repo.write_file("f.txt", &new_content);
+    repo.commit_file("a.txt", "a\n");
+    repo.write_file("a.txt", "a changed\n");
+    repo.jj(&["commit", "-m", "change a"]);
+    // Now @ is empty, @- has the change. Make a new change in @.
+    repo.write_file("a.txt", "a changed more\n");
 
-    let ids = repo.get_hunk_ids(&[]);
-    assert!(ids.len() >= 2);
+    let id = repo.get_single_hunk_id(&[]);
+    repo.tool_ok(&["squash", &id, "-m", "squashed"]);
 
-    // Discard first hunk
-    repo.tool_ok(&["discard", &ids[0].0]);
-
-    // File should still have changes (the other hunk)
-    let file_content = repo.read_file("f.txt");
-    // One of "TOP" or "BOTTOM" should be reverted, the other kept
-    let has_top = file_content.contains("TOP");
-    let has_bottom = file_content.contains("BOTTOM");
-    assert!(
-        has_top != has_bottom || (!has_top && !has_bottom),
-        "exactly one change should remain, got TOP={has_top} BOTTOM={has_bottom}"
-    );
+    // @ should be empty (change was squashed into parent)
+    let wc_diff = repo.jj_diff("@");
+    assert!(wc_diff.trim().is_empty(), "working copy should be empty after squash");
 }
 
 #[test]
-fn discard_multiple_hunks() {
+fn squash_one_of_two_hunks() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "a\n");
     repo.commit_file("b.txt", "b\n");
+    repo.jj(&["commit", "-m", "base"]);
     repo.write_file("a.txt", "a changed\n");
     repo.write_file("b.txt", "b changed\n");
 
     let a_id = repo.get_hunk_id_for_file("a.txt", &[]);
-    let b_id = repo.get_hunk_id_for_file("b.txt", &[]);
-    repo.tool_ok(&["discard", &a_id, &b_id]);
+    repo.tool_ok(&["squash", &a_id, "-m", "squash a only"]);
 
-    assert_eq!(repo.read_file("a.txt"), "a\n");
-    assert_eq!(repo.read_file("b.txt"), "b\n");
+    // a.txt change should have been squashed into parent
+    let parent_diff = repo.jj_diff("@-");
+    assert!(parent_diff.contains("a.txt"), "parent should have a.txt change");
+
+    // b.txt change should still be in working copy
+    let wc_diff = repo.jj_diff("@");
+    assert!(wc_diff.contains("b.txt"), "working copy should still have b.txt");
 }
 
 #[test]
-fn discard_invalid_id() {
+fn squash_with_revision() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "a\n");
+    repo.write_file("a.txt", "a changed\n");
+    repo.jj(&["commit", "-m", "change"]);
+    repo.jj(&["commit", "-m", "empty"]);
+
+    // Squash @-- into its parent using -r
+    let id = repo.get_single_hunk_id(&["-r", "@--"]);
+    repo.tool_ok(&["squash", &id, "-r", "@--", "-m", "squashed"]);
+}
+
+#[test]
+fn squash_invalid_id() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "x\n");
     repo.write_file("a.txt", "y\n");
 
-    let err = repo.tool_err(&["discard", "invalid"]);
+    let err = repo.tool_err(&["squash", "invalid", "-m", "nope"]);
     assert!(err.contains("hunk not found"));
-}
-
-#[test]
-fn discard_addition() {
-    let repo = TestRepo::new();
-    repo.commit_file("a.txt", "line1\n");
-    repo.write_file("a.txt", "line1\nnew_line\n");
-
-    let id = repo.get_single_hunk_id(&[]);
-    repo.tool_ok(&["discard", &id]);
-
-    assert_eq!(repo.read_file("a.txt"), "line1\n");
-}
-
-#[test]
-fn discard_deletion() {
-    let repo = TestRepo::new();
-    repo.commit_file("a.txt", "line1\nline2\nline3\n");
-    repo.write_file("a.txt", "line1\nline3\n");
-
-    let id = repo.get_single_hunk_id(&[]);
-    repo.tool_ok(&["discard", &id]);
-
-    assert_eq!(repo.read_file("a.txt"), "line1\nline2\nline3\n");
-}
-
-#[test]
-fn discard_modification() {
-    let repo = TestRepo::new();
-    repo.commit_file("a.txt", "old\n");
-    repo.write_file("a.txt", "new\n");
-
-    let id = repo.get_single_hunk_id(&[]);
-    repo.tool_ok(&["discard", &id]);
-
-    assert_eq!(repo.read_file("a.txt"), "old\n");
-}
-
-#[test]
-fn discard_new_file() {
-    let repo = TestRepo::new();
-    repo.write_file("dummy.txt", "x\n");
-    repo.jj(&["commit", "-m", "init"]);
-    repo.write_file("brand_new.txt", "content\n");
-
-    let id = repo.get_hunk_id_for_file("brand_new.txt", &[]);
-    repo.tool_ok(&["discard", &id]);
-
-    assert!(
-        !repo.file_exists("brand_new.txt"),
-        "new file should be removed"
-    );
-}
-
-#[test]
-fn discard_with_inline_range() {
-    let repo = TestRepo::new();
-    repo.commit_file("a.txt", "line1\nline2\nline3\n");
-    repo.write_file("a.txt", "LINE1\nLINE2\nLINE3\n");
-
-    let id = repo.get_single_hunk_id(&[]);
-    // Discard only a portion of the hunk
-    let spec = format!("{id}:1-2");
-    repo.tool_ok(&["discard", &spec]);
-
-    let content = repo.read_file("a.txt");
-    // Some lines should be restored, others remain changed
-    // Exact result depends on which lines 1-2 correspond to, but file shouldn't
-    // be fully original or fully changed
-    assert_ne!(content, "line1\nline2\nline3\n");
-    assert_ne!(content, "LINE1\nLINE2\nLINE3\n");
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1063,11 +981,8 @@ fn diffedit_keep_one_of_two_hunks() {
     let a_id = repo.get_hunk_id_for_file("a.txt", &["-r", "@-"]);
     repo.tool_ok(&["diffedit", &a_id, "-r", "@-"]);
 
-    // @- should now only contain the a.txt change
     let diff = repo.jj_diff("@-");
     assert!(diff.contains("a.txt"), "should keep a.txt change");
-    // b.txt change should have been removed from the revision
-    // (it may have been moved to working copy or dropped depending on jj behavior)
 }
 
 #[test]
@@ -1079,7 +994,6 @@ fn diffedit_default_revision() {
     repo.write_file("b.txt", "b changed\n");
 
     let a_id = repo.get_hunk_id_for_file("a.txt", &[]);
-    // No -r flag means @
     repo.tool_ok(&["diffedit", &a_id]);
 
     let diff = repo.jj_diff("@");
@@ -1101,18 +1015,17 @@ fn diffedit_invalid_id() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn restore_undo_working_copy_change() {
+fn restore_default_undoes_working_copy_change() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "a\n");
     repo.commit_file("b.txt", "b\n");
     repo.write_file("a.txt", "a changed\n");
     repo.write_file("b.txt", "b changed\n");
 
-    // Undo only the a.txt change from the working copy using restore --changes-in @
+    // Default (no flags) = --changes-in @
     let a_id = repo.get_hunk_id_for_file("a.txt", &[]);
-    repo.tool_ok(&["restore", &a_id, "--from", "@"]);
+    repo.tool_ok(&["restore", &a_id]);
 
-    // a.txt should be back to original, b.txt still changed
     assert_eq!(repo.read_file("a.txt"), "a\n", "a.txt should be restored");
     let diff = repo.jj_diff("@");
     assert!(diff.contains("b.txt"), "b.txt should still be changed");
@@ -1120,13 +1033,119 @@ fn restore_undo_working_copy_change() {
 }
 
 #[test]
+fn restore_changes_in_explicit() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "a\n");
+    repo.commit_file("b.txt", "b\n");
+    repo.write_file("a.txt", "a changed\n");
+    repo.write_file("b.txt", "b changed\n");
+
+    let a_id = repo.get_hunk_id_for_file("a.txt", &[]);
+    repo.tool_ok(&["restore", &a_id, "-c", "@"]);
+
+    assert_eq!(repo.read_file("a.txt"), "a\n", "a.txt should be restored");
+    let diff = repo.jj_diff("@");
+    assert!(diff.contains("b.txt"), "b.txt should still be changed");
+    assert!(!diff.contains("a.txt"), "a.txt change should be undone");
+}
+
+#[test]
+fn restore_multiple_hunks() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "a\n");
+    repo.commit_file("b.txt", "b\n");
+    repo.write_file("a.txt", "a changed\n");
+    repo.write_file("b.txt", "b changed\n");
+
+    let a_id = repo.get_hunk_id_for_file("a.txt", &[]);
+    let b_id = repo.get_hunk_id_for_file("b.txt", &[]);
+    repo.tool_ok(&["restore", &a_id, &b_id]);
+
+    assert_eq!(repo.read_file("a.txt"), "a\n");
+    assert_eq!(repo.read_file("b.txt"), "b\n");
+}
+
+#[test]
+fn restore_addition() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "line1\n");
+    repo.write_file("a.txt", "line1\nnew_line\n");
+
+    let id = repo.get_single_hunk_id(&[]);
+    repo.tool_ok(&["restore", &id]);
+
+    assert_eq!(repo.read_file("a.txt"), "line1\n");
+}
+
+#[test]
+fn restore_deletion() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "line1\nline2\nline3\n");
+    repo.write_file("a.txt", "line1\nline3\n");
+
+    let id = repo.get_single_hunk_id(&[]);
+    repo.tool_ok(&["restore", &id]);
+
+    assert_eq!(repo.read_file("a.txt"), "line1\nline2\nline3\n");
+}
+
+#[test]
+fn restore_modification() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "old\n");
+    repo.write_file("a.txt", "new\n");
+
+    let id = repo.get_single_hunk_id(&[]);
+    repo.tool_ok(&["restore", &id]);
+
+    assert_eq!(repo.read_file("a.txt"), "old\n");
+}
+
+#[test]
+fn restore_new_file() {
+    let repo = TestRepo::new();
+    repo.write_file("dummy.txt", "x\n");
+    repo.jj(&["commit", "-m", "init"]);
+    repo.write_file("brand_new.txt", "content\n");
+
+    let id = repo.get_hunk_id_for_file("brand_new.txt", &[]);
+    repo.tool_ok(&["restore", &id]);
+
+    assert!(
+        !repo.file_exists("brand_new.txt"),
+        "new file should be removed"
+    );
+}
+
+#[test]
+fn restore_one_of_two_hunks() {
+    let repo = TestRepo::new();
+    let content = repo.write_two_hunk_file("f.txt");
+    repo.jj(&["commit", "-m", "init"]);
+    let new_content = content.replace("top", "TOP").replace("bottom", "BOTTOM");
+    repo.write_file("f.txt", &new_content);
+
+    let ids = repo.get_hunk_ids(&[]);
+    assert!(ids.len() >= 2);
+
+    repo.tool_ok(&["restore", &ids[0].0]);
+
+    let file_content = repo.read_file("f.txt");
+    let has_top = file_content.contains("TOP");
+    let has_bottom = file_content.contains("BOTTOM");
+    assert!(
+        has_top != has_bottom || (!has_top && !has_bottom),
+        "exactly one change should remain, got TOP={has_top} BOTTOM={has_bottom}"
+    );
+}
+
+#[test]
 fn restore_invalid_id() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "x\n");
     repo.write_file("a.txt", "y\n");
-    repo.jj(&["commit", "-m", "c"]);
 
-    let err = repo.tool_err(&["restore", "invalid", "--from", "@-"]);
+    let err = repo.tool_err(&["restore", "invalid"]);
     assert!(err.contains("hunk not found"));
 }
 
@@ -1139,6 +1158,15 @@ fn tool_binary() -> PathBuf {
 }
 
 fn run_jj_tool(left: &Path, right: &Path, patch_path: Option<&Path>) -> std::process::Output {
+    run_jj_tool_with_reverse(left, right, patch_path, false)
+}
+
+fn run_jj_tool_with_reverse(
+    left: &Path,
+    right: &Path,
+    patch_path: Option<&Path>,
+    reverse: bool,
+) -> std::process::Output {
     let mut cmd = Command::new(tool_binary());
     cmd.args([
         "_jj-tool",
@@ -1147,6 +1175,9 @@ fn run_jj_tool(left: &Path, right: &Path, patch_path: Option<&Path>) -> std::pro
     ]);
     if let Some(p) = patch_path {
         cmd.env("JJ_HUNK_TOOL_PATCH", p);
+    }
+    if reverse {
+        cmd.env("JJ_HUNK_TOOL_REVERSE", "1");
     }
     cmd.output().unwrap()
 }
@@ -1174,6 +1205,33 @@ fn jj_tool_basic_reset_and_apply() {
 }
 
 #[test]
+fn jj_tool_reverse_mode() {
+    let left = tempfile::tempdir().unwrap();
+    let right = tempfile::tempdir().unwrap();
+
+    // Left has the changed state (like restore --changes-in where left=current)
+    std::fs::write(left.path().join("file.txt"), "hello\nworld\n").unwrap();
+    // Right has the parent state
+    std::fs::write(right.path().join("file.txt"), "hello\n").unwrap();
+
+    // Forward patch (adds "world")
+    let patch_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        patch_file.path(),
+        "--- a/file.txt\n+++ b/file.txt\n@@ -1 +1,2 @@\n hello\n+world\n",
+    )
+    .unwrap();
+
+    // With reverse: reset right to left (hello\nworld\n), then apply patch in reverse (remove world)
+    let output =
+        run_jj_tool_with_reverse(left.path(), right.path(), Some(patch_file.path()), true);
+    assert!(output.status.success());
+
+    let content = std::fs::read_to_string(right.path().join("file.txt")).unwrap();
+    assert_eq!(content, "hello\n", "reverse should undo the patch");
+}
+
+#[test]
 fn jj_tool_extra_files_removed() {
     let left = tempfile::tempdir().unwrap();
     let right = tempfile::tempdir().unwrap();
@@ -1183,7 +1241,7 @@ fn jj_tool_extra_files_removed() {
     std::fs::write(right.path().join("extra.txt"), "should go\n").unwrap();
 
     let patch_file = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(patch_file.path(), "").unwrap(); // empty patch
+    std::fs::write(patch_file.path(), "").unwrap();
 
     let output = run_jj_tool(left.path(), right.path(), Some(patch_file.path()));
     assert!(output.status.success());
@@ -1200,7 +1258,6 @@ fn jj_tool_subdirectories() {
     std::fs::create_dir_all(left.path().join("sub/deep")).unwrap();
     std::fs::write(left.path().join("sub/deep/file.txt"), "nested\n").unwrap();
 
-    // Right has a different structure
     std::fs::write(right.path().join("other.txt"), "other\n").unwrap();
 
     let patch_file = tempfile::NamedTempFile::new().unwrap();
@@ -1259,62 +1316,8 @@ fn jj_tool_empty_patch() {
     let output = run_jj_tool(left.path(), right.path(), Some(patch_file.path()));
     assert!(output.status.success());
 
-    // Right should match left exactly (reset, no patch applied)
     let content = std::fs::read_to_string(right.path().join("file.txt")).unwrap();
     assert_eq!(content, "content\n");
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// output tests
-// ──────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn commit_forwards_jj_output() {
-    let repo = TestRepo::new();
-    repo.commit_file("a.txt", "original\n");
-    repo.write_file("a.txt", "modified\n");
-
-    let id = repo.get_single_hunk_id(&[]);
-    let (_stdout, stderr) = repo.tool_output(&["commit", &id, "-m", "test commit"]);
-    // jj prints status info (e.g. "Working copy now at: ...") to stderr
-    assert!(!stderr.is_empty(), "commit should forward jj's output");
-}
-
-#[test]
-fn discard_outputs_hunk_ids_to_stderr() {
-    let repo = TestRepo::new();
-    repo.commit_file("a.txt", "original\n");
-    repo.write_file("a.txt", "modified\n");
-
-    let id = repo.get_single_hunk_id(&[]);
-    let (_stdout, stderr) = repo.tool_output(&["discard", &id]);
-    assert!(
-        stderr.contains(&id),
-        "discard stderr should contain hunk ID {id}, got: {stderr}"
-    );
-}
-
-#[test]
-fn discard_multiple_outputs_all_hunk_ids() {
-    let repo = TestRepo::new();
-    let content = repo.write_two_hunk_file("f.txt");
-    repo.jj(&["commit", "-m", "init"]);
-    let new_content = content.replace("top", "TOP").replace("bottom", "BOTTOM");
-    repo.write_file("f.txt", &new_content);
-
-    let ids = repo.get_hunk_ids(&[]);
-    assert!(ids.len() >= 2);
-
-    let id_strs: Vec<&str> = ids.iter().map(|(id, _)| id.as_str()).collect();
-    let mut args = vec!["discard"];
-    args.extend_from_slice(&id_strs);
-    let (_stdout, stderr) = repo.tool_output(&args);
-    for (id, _) in &ids {
-        assert!(
-            stderr.contains(id.as_str()),
-            "discard stderr should contain hunk ID {id}, got: {stderr}"
-        );
-    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
