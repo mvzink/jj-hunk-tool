@@ -37,6 +37,12 @@ blocking states) but must be resolved before the code compiles. Always check for
 conflicts after rewriting ancestors. See
 [references/conflict-resolution.md](references/conflict-resolution.md).
 
+**Workspaces share one repo.** Each workspace has its own `@` (working copy),
+but all share the same commit graph and operation log. Commits made in any
+workspace are immediately visible in all others — no merge, pull, or fetch
+needed. Unlike git worktrees, there's no branch-locking or merge-back workflow.
+See [references/workspaces.md](references/workspaces.md).
+
 **Operation log.** Every command creates an operation entry. `jj undo` reverts
 the last operation. `jj op restore <id>` jumps to any past state.
 
@@ -363,6 +369,44 @@ jj op log --no-pager                       # find operation to restore
 jj op restore <op-id>                      # restore to any point
 ```
 
+## Workspaces
+
+Workspaces let you have multiple working copies attached to the same repo. Each
+has its own `@`. All commits are shared — no merge-back needed.
+
+```bash
+jj workspace add ../feature-b        # create workspace (filesystem sibling)
+jj workspace list                     # list all workspaces
+jj workspace forget <name>           # unregister (delete files separately)
+jj workspace update-stale            # sync after external changes
+jj workspace rename <new-name>       # rename current workspace
+jj workspace root                    # print workspace root path
+```
+
+### Workspace notation in log and revsets
+
+When multiple workspaces exist, `jj log` shows each workspace's working copy:
+
+- `@` — current workspace's working copy
+- `feature-b@` — workspace "feature-b"'s working copy
+
+These are valid in revsets: `jj log --no-pager -r 'feature-b@::'`
+
+### Workflow: parallel work
+
+```bash
+jj new -m "feature work"
+jj workspace add ../test-ws          # new workspace, own working copy
+# In ../test-ws: run tests, experiment — commits visible in main workspace
+# Back in main workspace:
+jj log --no-pager                    # shows test-ws@ commit
+jj workspace forget test-ws          # done; rm -rf ../test-ws separately
+```
+
+For the full mental model (vs git worktrees), stale working copies, sparse
+checkouts, and colocated repo caveats, see
+[references/workspaces.md](references/workspaces.md).
+
 ## Common pitfalls for agents
 
 - Do NOT `jj abandon @` to "clean up" an empty working copy. It's normal.
@@ -389,3 +433,8 @@ jj op restore <op-id>                      # restore to any point
   Resolve them immediately before editing further descendants — cascading
   conflicts are much harder to fix. See
   [references/conflict-resolution.md](references/conflict-resolution.md).
+- Workspaces can go stale when another workspace rewrites their `@`. Run
+  `jj workspace update-stale` to fix.
+- `jj workspace forget` only unregisters — delete the directory yourself.
+- In colocated repos, `jj workspace add` may lose git interop in the new
+  workspace.

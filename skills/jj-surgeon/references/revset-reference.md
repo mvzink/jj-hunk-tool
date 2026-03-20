@@ -63,6 +63,12 @@ Used in `author_date()`, `committer_date()`.
 - `after:"2 days ago"`, `before:"yesterday 5pm"`
 - ISO 8601: `after:"2024-02-01T12:00:00-08:00"`
 
+## Workspace symbols
+
+- `@` -- working-copy commit in the current workspace
+- `<name>@` -- working-copy commit in workspace `<name>` (e.g., `feature-b@`)
+- Valid in any revset context: `jj log -r 'feature-b@::'`
+
 ## Built-in aliases
 
 - `trunk()` -- head of default bookmark on default remote
