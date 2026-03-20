@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use git_surgeon::diff::DiffHunk;
 
 const PATCH_ENV_VAR: &str = "JJ_HUNK_TOOL_PATCH";
+const REVERSE_ENV_VAR: &str = "JJ_HUNK_TOOL_REVERSE";
 
 /// A hunk spec: (hunk_id, hunk, line_ranges).
 pub type HunkSpec<'a> = (&'a str, &'a DiffHunk, Vec<(usize, usize)>);
@@ -45,7 +46,7 @@ fn write_tool_config(exe: &Path) -> Result<tempfile::NamedTempFile> {
 }
 
 /// Run a jj command with our tool configured.
-fn run_jj_with_tool(jj_args: &[&str], patch_content: &str) -> Result<()> {
+fn run_jj_with_tool(jj_args: &[&str], patch_content: &str, reverse: bool) -> Result<()> {
     let exe = std::env::current_exe().context("finding own executable")?;
 
     let mut patch_file = tempfile::NamedTempFile::new().context("creating temp patch file")?;
@@ -60,6 +61,9 @@ fn run_jj_with_tool(jj_args: &[&str], patch_content: &str) -> Result<()> {
     cmd.args(["--config-file", &config_file.path().display().to_string()]);
     cmd.args(["--tool", "jj-hunk-tool"]);
     cmd.env(PATCH_ENV_VAR, patch_file.path());
+    if reverse {
+        cmd.env(REVERSE_ENV_VAR, "1");
+    }
 
     let output = cmd.output().context("running jj")?;
 
@@ -105,7 +109,7 @@ pub fn commit_hunks(
         args.extend_from_slice(&["-m", &msg_storage]);
     }
 
-    run_jj_with_tool(&args, &patch_content)?;
+    run_jj_with_tool(&args, &patch_content, false)?;
     Ok(())
 }
 
@@ -151,7 +155,7 @@ pub fn diffedit_hunks(specs: &[HunkSpec<'_>], revision: &str) -> Result<()> {
     if patch_content.is_empty() {
         bail!("no hunks selected");
     }
-    run_jj_with_tool(&["diffedit", "-r", revision], &patch_content)
+    run_jj_with_tool(&["diffedit", "-r", revision], &patch_content, false)
 }
 
 /// Restore selected hunks from one revision into another.
@@ -164,7 +168,7 @@ pub fn restore_hunks(specs: &[HunkSpec<'_>], from: &str, to: Option<&str>) -> Re
     if let Some(target) = to {
         args.extend_from_slice(&["--to", target]);
     }
-    run_jj_with_tool(&args, &patch_content)
+    run_jj_with_tool(&args, &patch_content, true)
 }
 
 /// JJ tool protocol handler.
@@ -188,12 +192,15 @@ pub fn jj_tool_apply(left: &str, right: &str) -> Result<()> {
     reset_dir_to(left_path, right_path)?;
 
     // Step 2: Apply the pre-computed patch
-    let status = Command::new("patch")
-        .args(["-p1", "--silent", "-i"])
-        .arg(&patch_path)
-        .current_dir(right_path)
-        .status()
-        .context("failed to run patch")?;
+    let reverse = std::env::var(REVERSE_ENV_VAR).is_ok();
+    let mut patch_cmd = Command::new("patch");
+    patch_cmd.args(["-p1", "--silent"]);
+    if reverse {
+        patch_cmd.arg("--reverse");
+    }
+    patch_cmd.arg("-i").arg(&patch_path);
+    patch_cmd.current_dir(right_path);
+    let status = patch_cmd.status().context("failed to run patch")?;
 
     if !status.success() {
         bail!("patch failed to apply (exit code: {:?})", status.code());
