@@ -139,6 +139,9 @@ enum Command {
         /// Show routing plan without executing
         #[arg(long)]
         dry_run: bool,
+        /// Interactively review each hunk before absorbing
+        #[arg(short, long)]
+        interactive: bool,
     },
     /// Install the jj-surgeon skill for AI coding agents
     InstallSkill {
@@ -427,6 +430,7 @@ fn main() -> Result<()> {
             hunk_ids,
             revision,
             dry_run,
+            interactive,
         } => {
             let source = revision.as_deref().unwrap_or("@");
             let raw = get_jj_diff(&Some(source.to_string()))?;
@@ -451,7 +455,7 @@ fn main() -> Result<()> {
                 }
                 sel
             };
-            tool::absorb_hunks(&selected, source, dry_run)?;
+            tool::absorb_hunks(&selected, source, dry_run, interactive)?;
         }
         Command::InstallSkill { target } => {
             install_skill(target.as_deref())?;

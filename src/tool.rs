@@ -188,6 +188,7 @@ pub fn absorb_hunks(
     selected: &[&(String, &DiffHunk)],
     source: &str,
     dry_run: bool,
+    interactive: bool,
 ) -> Result<()> {
     use crate::diff;
 
@@ -314,6 +315,132 @@ pub fn absorb_hunks(
             },
             fingerprint,
         ));
+    }
+
+    // 3b. Interactive review: let user accept/skip/retarget each hunk
+    if interactive {
+        let ancestor_list: Vec<String> = ancestors.iter().cloned().collect();
+        let stdin = std::io::stdin();
+        let mut quit = false;
+
+        for (routing, _fp) in routings.iter_mut() {
+            if quit {
+                // After quit, skip remaining hunks (leave targets as-is won't matter,
+                // but we need to clear target so they don't get absorbed)
+                routing.target = None;
+                routing.reason = "skipped (quit)";
+                continue;
+            }
+
+            // Find the original hunk to display its content
+            let hunk_opt = selected
+                .iter()
+                .find(|(id, _)| *id == routing.hunk_id)
+                .map(|(_, h)| *h);
+
+            // Display hunk
+            println!(
+                "\n{} {} (+{} -{})",
+                routing.hunk_id, routing.file, routing.additions, routing.deletions
+            );
+            if let Some(hunk) = hunk_opt {
+                let width = hunk.lines.len().to_string().len();
+                for (i, line) in hunk.lines.iter().enumerate() {
+                    println!("{:>w$}:{line}", i + 1, w = width);
+                }
+            }
+
+            // Show current target
+            let target_desc = if let Some(ref t) = routing.target {
+                let desc = diff::get_change_description(t).unwrap_or_default();
+                if desc.is_empty() {
+                    format!("Target: {t}")
+                } else {
+                    format!("Target: {t} ({desc})")
+                }
+            } else if routing.reason == "ambiguous" {
+                let descs: Vec<String> = routing
+                    .candidates
+                    .iter()
+                    .map(|c| {
+                        let desc = diff::get_change_description(c).unwrap_or_default();
+                        if desc.is_empty() {
+                            c.clone()
+                        } else {
+                            format!("{c} ({desc})")
+                        }
+                    })
+                    .collect();
+                format!("Ambiguous: {}", descs.join(", "))
+            } else {
+                format!("Unmatched: {}", routing.reason)
+            };
+            println!("{target_desc}");
+
+            // Prompt loop
+            loop {
+                print!("[a]bsorb / [s]kip / [t]arget / [q]uit: ");
+                std::io::Write::flush(&mut std::io::stdout())?;
+                let mut input = String::new();
+                stdin.read_line(&mut input)?;
+                let action = input.trim().to_lowercase();
+
+                match action.as_str() {
+                    "a" | "absorb" => {
+                        if routing.target.is_none() {
+                            println!("No target set. Use [t] to pick a target first.");
+                            continue;
+                        }
+                        break;
+                    }
+                    "s" | "skip" => {
+                        routing.target = None;
+                        routing.reason = "skipped";
+                        break;
+                    }
+                    "t" | "target" => {
+                        // Show numbered list of ancestors
+                        println!("Select target:");
+                        for (i, cid) in ancestor_list.iter().enumerate() {
+                            let desc = diff::get_change_description(cid).unwrap_or_default();
+                            if desc.is_empty() {
+                                println!("  {}: {cid}", i + 1);
+                            } else {
+                                println!("  {}: {cid} ({desc})", i + 1);
+                            }
+                        }
+                        print!("Enter number: ");
+                        std::io::Write::flush(&mut std::io::stdout())?;
+                        let mut num_input = String::new();
+                        stdin.read_line(&mut num_input)?;
+                        if let Ok(n) = num_input.trim().parse::<usize>() {
+                            if n >= 1 && n <= ancestor_list.len() {
+                                routing.target = Some(ancestor_list[n - 1].clone());
+                                routing.reason = "retargeted";
+                                let desc =
+                                    diff::get_change_description(&ancestor_list[n - 1])
+                                        .unwrap_or_default();
+                                println!("→ Retargeted to {}{}", ancestor_list[n - 1],
+                                    if desc.is_empty() { String::new() } else { format!(" ({desc})") });
+                                break;
+                            }
+                        }
+                        println!("Invalid selection.");
+                        continue;
+                    }
+                    "q" | "quit" => {
+                        quit = true;
+                        routing.target = None;
+                        routing.reason = "skipped (quit)";
+                        break;
+                    }
+                    _ => {
+                        println!("Unknown action. Use a/s/t/q.");
+                        continue;
+                    }
+                }
+            }
+        }
     }
 
     // 4. Print routing plan
