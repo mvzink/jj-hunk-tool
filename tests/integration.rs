@@ -1373,6 +1373,263 @@ fn install_skill_overwrites_existing() {
     assert!(content.starts_with("---"), "should overwrite with new content");
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// absorb
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn absorb_single_hunk_to_ancestor() {
+    let repo = TestRepo::new();
+    // Base content
+    repo.commit_file("a.txt", "line1\nline2\nline3\n");
+    // Commit X: modify line2
+    repo.write_file("a.txt", "line1\nmodified_by_x\nline3\n");
+    repo.jj(&["commit", "-m", "change by X"]);
+    // @ modifies the same line again
+    repo.write_file("a.txt", "line1\nmodified_again\nline3\n");
+
+    // Run absorb
+    repo.tool_ok(&["absorb"]);
+
+    // @ should be empty (change was absorbed)
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.trim().is_empty(),
+        "working copy should be empty after absorb, got: {wc_diff}"
+    );
+
+    // The ancestor commit (now @-) should have the final modification
+    let ancestor_diff = repo.jj_diff("@-");
+    assert!(
+        ancestor_diff.contains("modified_again"),
+        "ancestor should have the absorbed change, got: {ancestor_diff}"
+    );
+}
+
+#[test]
+fn absorb_multiple_hunks_to_different_ancestors() {
+    let repo = TestRepo::new();
+    // Base: two widely separated functions
+    let base = "func_a\n".to_string()
+        + &"padding\n".repeat(20)
+        + "func_b\n";
+    repo.commit_file("f.txt", &base);
+
+    // Commit X: modify func_a
+    let after_x = base.replace("func_a", "func_a_by_x");
+    repo.write_file("f.txt", &after_x);
+    repo.jj(&["commit", "-m", "change func_a"]);
+
+    // Commit Y: modify func_b
+    let after_y = after_x.replace("func_b", "func_b_by_y");
+    repo.write_file("f.txt", &after_y);
+    repo.jj(&["commit", "-m", "change func_b"]);
+
+    // @: modify both funcs again
+    let working = after_y
+        .replace("func_a_by_x", "func_a_absorbed")
+        .replace("func_b_by_y", "func_b_absorbed");
+    repo.write_file("f.txt", &working);
+
+    repo.tool_ok(&["absorb"]);
+
+    // @ should be empty
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.trim().is_empty(),
+        "working copy should be empty after absorb, got: {wc_diff}"
+    );
+
+    // X (now @--) should have func_a_absorbed
+    let x_diff = repo.jj_diff("@--");
+    assert!(
+        x_diff.contains("func_a_absorbed"),
+        "X should have func_a change, got: {x_diff}"
+    );
+
+    // Y (now @-) should have func_b_absorbed
+    let y_diff = repo.jj_diff("@-");
+    assert!(
+        y_diff.contains("func_b_absorbed"),
+        "Y should have func_b change, got: {y_diff}"
+    );
+}
+
+#[test]
+fn absorb_unmatched_hunk_stays_in_working_copy() {
+    let repo = TestRepo::new();
+    // Base: some content with a gap
+    let base = "func_a\n".to_string()
+        + &"padding\n".repeat(20)
+        + "end\n";
+    repo.commit_file("f.txt", &base);
+
+    // Commit X: modify func_a
+    let after_x = base.replace("func_a", "func_a_by_x");
+    repo.write_file("f.txt", &after_x);
+    repo.jj(&["commit", "-m", "change func_a"]);
+
+    // @: modify func_a (should absorb) AND add new code at end (unmatched)
+    let working = after_x
+        .replace("func_a_by_x", "func_a_absorbed")
+        .replace("end", "brand_new_code\nend");
+    repo.write_file("f.txt", &working);
+
+    repo.tool_ok(&["absorb"]);
+
+    // The func_a change should have been absorbed
+    let x_diff = repo.jj_diff("@-");
+    assert!(
+        x_diff.contains("func_a_absorbed"),
+        "ancestor should have absorbed change, got: {x_diff}"
+    );
+
+    // The unmatched hunk should stay in @
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.contains("brand_new_code"),
+        "unmatched hunk should stay in working copy, got: {wc_diff}"
+    );
+}
+
+#[test]
+fn absorb_with_hunk_ids_selective() {
+    let repo = TestRepo::new();
+    // Base with two files
+    repo.commit_file("a.txt", "aaa\n");
+    repo.commit_file("b.txt", "bbb\n");
+
+    // Commit X: modify both files
+    repo.write_file("a.txt", "aaa_by_x\n");
+    repo.write_file("b.txt", "bbb_by_x\n");
+    repo.jj(&["commit", "-m", "change both"]);
+
+    // @: modify both again
+    repo.write_file("a.txt", "aaa_absorbed\n");
+    repo.write_file("b.txt", "bbb_absorbed\n");
+
+    // Only absorb the a.txt hunk
+    let a_id = repo.get_hunk_id_for_file("a.txt", &[]);
+    repo.tool_ok(&["absorb", &a_id]);
+
+    // a.txt change should be absorbed
+    let x_diff = repo.jj_diff("@-");
+    assert!(
+        x_diff.contains("aaa_absorbed"),
+        "a.txt should be absorbed, got: {x_diff}"
+    );
+
+    // b.txt change should still be in @
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.contains("bbb_absorbed"),
+        "b.txt should stay in working copy, got: {wc_diff}"
+    );
+}
+
+#[test]
+fn absorb_dry_run_no_changes() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "line1\nline2\nline3\n");
+    repo.write_file("a.txt", "line1\nmodified_by_x\nline3\n");
+    repo.jj(&["commit", "-m", "change by X"]);
+    repo.write_file("a.txt", "line1\nmodified_again\nline3\n");
+
+    let output = repo.tool_ok(&["absorb", "--dry-run"]);
+
+    // Should show routing plan
+    assert!(
+        output.contains("a.txt"),
+        "dry run should mention the file, got: {output}"
+    );
+
+    // But NOT actually make changes — @ should still have the diff
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        !wc_diff.trim().is_empty(),
+        "dry run should not change working copy"
+    );
+}
+
+#[test]
+fn absorb_nothing_to_absorb() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "hello\n");
+    // @ has no changes
+
+    let result = repo.tool(&["absorb"]);
+    // Should succeed but indicate nothing to do
+    assert!(result.is_ok(), "absorb with no changes should not error");
+    let output = result.unwrap();
+    assert!(
+        output.contains("Nothing") || output.contains("nothing") || output.trim().is_empty(),
+        "should indicate nothing to absorb, got: {output}"
+    );
+}
+
+#[test]
+fn absorb_new_file_stays_in_working_copy() {
+    let repo = TestRepo::new();
+    repo.commit_file("existing.txt", "content\n");
+    // Commit X: modify existing file
+    repo.write_file("existing.txt", "modified\n");
+    repo.jj(&["commit", "-m", "modify existing"]);
+
+    // @: modify existing (should absorb) and add new file (should not)
+    repo.write_file("existing.txt", "modified_again\n");
+    repo.write_file("brand_new.txt", "new file content\n");
+
+    repo.tool_ok(&["absorb"]);
+
+    // existing.txt change absorbed
+    let x_diff = repo.jj_diff("@-");
+    assert!(
+        x_diff.contains("modified_again"),
+        "existing.txt should be absorbed, got: {x_diff}"
+    );
+
+    // brand_new.txt stays in @
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.contains("brand_new.txt"),
+        "new file should stay in working copy, got: {wc_diff}"
+    );
+}
+
+#[test]
+fn absorb_ambiguous_hunk_stays() {
+    let repo = TestRepo::new();
+    // Base content with 3 lines
+    repo.commit_file("a.txt", "line_a\nline_b\nline_c\n");
+
+    // Commit X: modify line_a
+    repo.write_file("a.txt", "line_a_by_x\nline_b\nline_c\n");
+    repo.jj(&["commit", "-m", "change line_a"]);
+
+    // Commit Y: modify line_c
+    repo.write_file("a.txt", "line_a_by_x\nline_b\nline_c_by_y\n");
+    repo.jj(&["commit", "-m", "change line_c"]);
+
+    // @ modifies ALL three lines in a single hunk (lines from both X and Y)
+    repo.write_file("a.txt", "AAA\nBBB\nCCC\n");
+
+    let output = repo.tool_ok(&["absorb"]);
+
+    // Should be ambiguous — the deleted lines span both X and Y
+    // The hunk should stay in @
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        !wc_diff.trim().is_empty(),
+        "ambiguous hunk should stay in working copy"
+    );
+
+    // Output should mention ambiguity
+    assert!(
+        output.contains("ambiguous") || output.contains("Ambiguous") || output.contains("overlaps"),
+        "should report ambiguity, got: {output}"
+    );
+}
+
 #[test]
 fn install_skill_prints_success_message() {
     let target = tempfile::tempdir().unwrap();

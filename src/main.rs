@@ -129,6 +129,17 @@ enum Command {
         #[arg(long)]
         restore_descendants: bool,
     },
+    /// Move hunks from a revision into ancestor commits that introduced the overlapping code
+    Absorb {
+        /// Hunk IDs to absorb (if omitted, absorb all)
+        hunk_ids: Vec<String>,
+        /// Source revision (default: @)
+        #[arg(short, long)]
+        revision: Option<String>,
+        /// Show routing plan without executing
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Install the jj-surgeon skill for AI coding agents
     InstallSkill {
         /// Target directory (overrides agent selection)
@@ -411,6 +422,36 @@ fn main() -> Result<()> {
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
             let jj_arg_refs: Vec<&str> = jj_args.iter().map(|s| s.as_str()).collect();
             tool::restore_hunks(&specs, &jj_arg_refs)?;
+        }
+        Command::Absorb {
+            hunk_ids,
+            revision,
+            dry_run,
+        } => {
+            let source = revision.as_deref().unwrap_or("@");
+            let raw = get_jj_diff(&Some(source.to_string()))?;
+            let hunks = parse_diff(&raw);
+            let identified = assign_ids(&hunks);
+            if identified.is_empty() {
+                println!("Nothing to absorb.");
+                return Ok(());
+            }
+            // Filter to requested hunk IDs if provided
+            let selected: Vec<_> = if hunk_ids.is_empty() {
+                identified.iter().collect()
+            } else {
+                let mut sel = Vec::new();
+                for raw_spec in &hunk_ids {
+                    let (id, _ranges) = parse_id_range(raw_spec)?;
+                    let entry = identified
+                        .iter()
+                        .find(|(hid, _)| hid == id)
+                        .ok_or_else(|| anyhow::anyhow!("hunk not found: {id}"))?;
+                    sel.push(entry);
+                }
+                sel
+            };
+            tool::absorb_hunks(&selected, source, dry_run)?;
         }
         Command::InstallSkill { target } => {
             install_skill(target.as_deref())?;
