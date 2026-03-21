@@ -94,6 +94,12 @@ jj-hunk-tool diffedit <id1> <id2> -r <revset>
 jj-hunk-tool restore <id1> <id2>                 # default: undo from @
 jj-hunk-tool restore <id> -c <revset>            # undo from specific revision
 jj-hunk-tool restore <id> --from <rev> --into <rev>
+
+# Auto-absorb hunks into ancestors (like jj absorb, but hunk-aware)
+jj-hunk-tool absorb                              # absorb all matched hunks from @
+jj-hunk-tool absorb <id1> <id2>                  # absorb specific hunks only
+jj-hunk-tool absorb --dry-run                    # preview routing plan
+jj-hunk-tool absorb -i                           # interactive: review each hunk
 ```
 
 ### Hunk IDs
@@ -334,7 +340,20 @@ jj-hunk-tool restore <id1> <id2>           # undo those hunks (default: -c @)
 # Make fixes in working copy, then:
 jj absorb                                  # auto-distributes to correct ancestors
 jj op show -p --no-pager                   # review what happened
+
+# Hunk-aware absorb (routes by hunk overlap, not per-line blame)
+jj-hunk-tool absorb                        # auto-absorb all matched hunks
+jj-hunk-tool absorb --dry-run              # preview: which hunk → which ancestor
+jj-hunk-tool absorb <id>                   # absorb specific hunks only
+jj-hunk-tool absorb -i                     # interactive review per hunk
 ```
+
+`jj-hunk-tool absorb` differs from `jj absorb`: it treats each hunk as an
+atomic unit (whole hunk goes to one ancestor or stays), and only routes hunks
+where deleted/modified lines are blamed to a single mutable ancestor. Pure
+insertions and new files stay in `@`. Ambiguous hunks (lines from multiple
+ancestors) stay in `@` with the candidate list printed. Use `-i` to review
+each hunk and optionally retarget to a different ancestor.
 
 ### Stacking changes
 

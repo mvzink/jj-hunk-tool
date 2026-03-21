@@ -33,6 +33,9 @@ jj-hunk-tool diffedit <hunk-id>... [-r <rev>] [--from <rev>] [--to <rev>]
 # Undo selected hunks from a revision (like jj restore)
 jj-hunk-tool restore <hunk-id>... [-c <rev>] [--from <rev>] [--into <rev>]
 
+# Auto-absorb hunks into ancestor commits
+jj-hunk-tool absorb [<hunk-id>...] [--dry-run] [-i]
+
 # Line ranges for sub-hunk precision (use `hunks` to see line numbers)
 jj-hunk-tool split abc1234:5        # line 5
 jj-hunk-tool split abc1234:1-10     # lines 1-10
@@ -47,6 +50,7 @@ jj-hunk-tool split abc1234:1-3,7-9  # multiple ranges
 | `jj squash -i` | `jj-hunk-tool squash <hunks>` | hunks to move to destination |
 | `jj diffedit` | `jj-hunk-tool diffedit <hunks>` | hunks to keep in the revision |
 | `jj restore -i` | `jj-hunk-tool restore <hunks>` | hunks to undo |
+| `jj absorb` | `jj-hunk-tool absorb` | hunks auto-routed to ancestors |
 
 ## Common patterns
 
@@ -63,6 +67,54 @@ jj-hunk-tool squash <hunk-id>... -m "squashed"
 # Split a historical revision
 jj-hunk-tool split <hunk-id>... -r <rev> -m "extracted"
 ```
+
+## Absorb
+
+`jj-hunk-tool absorb` automatically moves hunks from `@` into the mutable ancestor commits that introduced the overlapping code. It's similar to `jj absorb`, but operates at hunk granularity rather than per-line.
+
+### How it works
+
+1. **Annotate**: For each file changed in `@`, runs `jj file annotate` on the parent to find which commit introduced each line.
+2. **Route**: For each hunk, checks the deleted/modified lines (`-` lines). If they all blame to a single mutable ancestor, the hunk is routed there. If they blame to multiple ancestors, the hunk is ambiguous and stays in `@`.
+3. **Execute**: For each target ancestor, runs `jj squash --from @ --into <target>` with the tool protocol, moving only the matched hunks.
+
+Key differences from `jj absorb`:
+- **Atomic hunks**: Each hunk goes to one target or stays. `jj absorb` can split a single hunk across targets at the line level.
+- **Conservative**: Pure insertions (no deleted lines) and new files always stay in `@`, since there are no blamed lines to determine the target.
+- **Selective**: Pass specific hunk IDs to absorb only those hunks.
+
+```sh
+# Preview what would happen
+jj-hunk-tool absorb --dry-run
+
+# Absorb all matched hunks
+jj-hunk-tool absorb
+
+# Absorb only specific hunks
+jj-hunk-tool absorb abc1234 def5678
+```
+
+### Interactive mode
+
+`absorb -i` presents each hunk with its content and proposed target, then prompts for an action:
+
+```
+abc1234 src/main.rs (+5 -3)
+  1: fn example() {
+  2:-    old_code();
+  3:+    new_code();
+  4: }
+
+Target: kkzuqymt (add feature A)
+[a]bsorb / [s]kip / [t]arget / [q]uit:
+```
+
+- **a** — Accept the proposed routing
+- **s** — Skip this hunk (leave in `@`)
+- **t** — Override the target: shows a numbered list of all mutable ancestors to choose from
+- **q** — Quit; skip all remaining hunks
+
+This is useful for reviewing what absorb will do, handling ambiguous hunks manually, or redirecting a hunk to a different ancestor than what blame suggests.
 
 ## Alias
 
