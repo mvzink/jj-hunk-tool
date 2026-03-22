@@ -80,7 +80,7 @@ jj-hunk-tool split <hunk-id>... -r <rev> -m "extracted"
 
 Key differences from `jj absorb`:
 - **Atomic hunks**: Each hunk goes to one target or stays. `jj absorb` can split a single hunk across targets at the line level.
-- **Conservative**: Pure insertions (no deleted lines) and new files always stay in `@`, since there are no blamed lines to determine the target.
+- **File fallback**: When a hunk has no overlapping blamed lines (e.g. pure insertions), falls back to the most recent mutable ancestor that touched the same file. New files stay in `@`.
 - **Selective**: Pass specific hunk IDs to absorb only those hunks.
 
 ```sh

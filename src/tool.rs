@@ -449,7 +449,18 @@ pub fn absorb_hunks(
             let target = ancestor_hits.into_keys().next().unwrap();
             (Some(target), vec![], "matched")
         } else if ancestor_hits.is_empty() {
-            (None, vec![], "no overlapping ancestor hunk")
+            // Fallback: find the most recent mutable ancestor that touched this file
+            if hunk.old_file != "/dev/null" {
+                match diff::get_ancestors_touching_file(source, &hunk.file) {
+                    Ok(file_ancestors) if !file_ancestors.is_empty() => {
+                        let target = file_ancestors[0].clone();
+                        (Some(target), vec![], "matched (file)")
+                    }
+                    _ => (None, vec![], "no overlapping ancestor hunk"),
+                }
+            } else {
+                (None, vec![], "no overlapping ancestor hunk")
+            }
         } else {
             let candidates: Vec<String> = ancestor_hits.into_keys().collect();
             (None, candidates, "ambiguous")

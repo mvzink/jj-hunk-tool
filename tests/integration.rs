@@ -1485,7 +1485,7 @@ fn absorb_multiple_hunks_to_different_ancestors() {
 }
 
 #[test]
-fn absorb_unmatched_hunk_stays_in_working_copy() {
+fn absorb_insertion_same_file_uses_file_fallback() {
     let repo = TestRepo::new();
     // Base: some content with a gap
     let base = "func_a\n".to_string()
@@ -1498,7 +1498,7 @@ fn absorb_unmatched_hunk_stays_in_working_copy() {
     repo.write_file("f.txt", &after_x);
     repo.jj(&["commit", "-m", "change func_a"]);
 
-    // @: modify func_a (should absorb) AND add new code at end (unmatched)
+    // @: modify func_a (hunk match) AND add new code at end (file fallback)
     let working = after_x
         .replace("func_a_by_x", "func_a_absorbed")
         .replace("end", "brand_new_code\nend");
@@ -1506,18 +1506,43 @@ fn absorb_unmatched_hunk_stays_in_working_copy() {
 
     repo.tool_ok(&["absorb"]);
 
-    // The func_a change should have been absorbed
+    // Both changes should be absorbed into X (one via hunk match, one via file fallback)
     let x_diff = repo.jj_diff("@-");
     assert!(
         x_diff.contains("func_a_absorbed"),
-        "ancestor should have absorbed change, got: {x_diff}"
+        "hunk-matched change should be absorbed, got: {x_diff}"
+    );
+    assert!(
+        x_diff.contains("brand_new_code"),
+        "file-fallback insertion should also be absorbed, got: {x_diff}"
     );
 
-    // The unmatched hunk should stay in @
+    // @ should be empty
     let wc_diff = repo.jj_diff("@");
     assert!(
-        wc_diff.contains("brand_new_code"),
-        "unmatched hunk should stay in working copy, got: {wc_diff}"
+        wc_diff.trim().is_empty(),
+        "working copy should be empty after absorb, got: {wc_diff}"
+    );
+}
+
+#[test]
+fn absorb_unmatched_hunk_stays_in_working_copy() {
+    let repo = TestRepo::new();
+    // Commit X: modify a.txt
+    repo.commit_file("a.txt", "aaa\n");
+    repo.write_file("a.txt", "aaa_by_x\n");
+    repo.jj(&["commit", "-m", "change a.txt"]);
+
+    // @ adds a brand-new file — no ancestor could have touched it
+    repo.write_file("brand_new.txt", "new stuff\n");
+
+    repo.tool_ok(&["absorb"]);
+
+    // New file should stay in @ (new files have no file-level fallback)
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.contains("brand_new.txt"),
+        "new file should stay in working copy, got: {wc_diff}"
     );
 }
 
@@ -1622,6 +1647,91 @@ fn absorb_new_file_stays_in_working_copy() {
     assert!(
         wc_diff.contains("brand_new.txt"),
         "new file should stay in working copy, got: {wc_diff}"
+    );
+}
+
+#[test]
+fn absorb_pure_insertion_falls_back_to_file() {
+    let repo = TestRepo::new();
+    // Base file with content
+    let base = "line1\nline2\nline3\nline4\nline5\n";
+    repo.commit_file("a.txt", base);
+
+    // Commit X: modify line2
+    let after_x = base.replace("line2", "line2_by_x");
+    repo.write_file("a.txt", &after_x);
+    repo.jj(&["commit", "-m", "change line2"]);
+
+    // @ adds a pure insertion (no deletions) to the same file
+    let working = after_x.replace("line5", "line5\nnew_stuff");
+    repo.write_file("a.txt", &working);
+
+    repo.tool_ok(&["absorb"]);
+
+    // The pure insertion should fall back to file-level match → X
+    let x_diff = repo.jj_diff("@-");
+    assert!(
+        x_diff.contains("new_stuff"),
+        "pure insertion should be absorbed via file fallback, got: {x_diff}"
+    );
+
+    // @ should be empty
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.trim().is_empty(),
+        "working copy should be empty after absorb, got: {wc_diff}"
+    );
+}
+
+#[test]
+fn absorb_file_fallback_picks_most_recent() {
+    let repo = TestRepo::new();
+    // Base file
+    let base = "aaa\n".to_string() + &"padding\n".repeat(20) + "zzz\n";
+    repo.commit_file("f.txt", &base);
+
+    // Commit X: modify "aaa"
+    let after_x = base.replace("aaa", "aaa_by_x");
+    repo.write_file("f.txt", &after_x);
+    repo.jj(&["commit", "-m", "commit X"]);
+
+    // Commit Y: modify "zzz" (most recent ancestor touching f.txt)
+    let after_y = after_x.replace("zzz", "zzz_by_y");
+    repo.write_file("f.txt", &after_y);
+    repo.jj(&["commit", "-m", "commit Y"]);
+
+    // @ adds pure insertion in the middle (not overlapping X or Y's hunks)
+    let working = after_y.replace("padding\npadding\npadding\npadding\npadding\n",
+        "padding\npadding\nINSERTED\npadding\npadding\npadding\n");
+    repo.write_file("f.txt", &working);
+
+    repo.tool_ok(&["absorb"]);
+
+    // Should fall back to Y (most recent ancestor touching f.txt)
+    let y_diff = repo.jj_diff("@-");
+    assert!(
+        y_diff.contains("INSERTED"),
+        "pure insertion should go to most recent ancestor (Y), got: {y_diff}"
+    );
+}
+
+#[test]
+fn absorb_file_fallback_does_not_apply_to_new_files() {
+    let repo = TestRepo::new();
+    repo.commit_file("existing.txt", "hello\n");
+    repo.write_file("existing.txt", "hello_modified\n");
+    repo.jj(&["commit", "-m", "modify existing"]);
+
+    // @ adds a brand new file (no ancestor touched it)
+    repo.write_file("brand_new.txt", "new content\n");
+
+    repo.tool_ok(&["absorb"]);
+
+    // New file should stay in @
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.contains("brand_new.txt"),
+        "new file should not be absorbed via file fallback, got: {wc_diff}"
     );
 }
 

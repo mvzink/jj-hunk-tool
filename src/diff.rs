@@ -70,6 +70,28 @@ pub fn get_change_description(change_id: &str) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
+/// Get mutable ancestors that touched a specific file, ordered most-recent-first.
+pub fn get_ancestors_touching_file(source_rev: &str, file: &str) -> Result<Vec<String>> {
+    let revset = format!("(immutable_heads()..({source_rev}-)) & files(\"{file}\")");
+    let output = Command::new("jj")
+        .args([
+            "log",
+            "--no-pager",
+            "--no-graph",
+            "-r",
+            &revset,
+            "-T",
+            "change_id.shortest(8) ++ \"\\n\"",
+        ])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("jj log failed: {stderr}");
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    Ok(stdout.lines().map(|l| l.to_string()).collect())
+}
+
 /// Run `jj diff --git` for the given revision and return the raw output.
 pub fn get_jj_diff(revision: &Option<String>) -> Result<String> {
     let mut cmd = Command::new("jj");

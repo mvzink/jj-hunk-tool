@@ -349,11 +349,13 @@ jj-hunk-tool absorb -i                     # interactive review per hunk
 ```
 
 `jj-hunk-tool absorb` differs from `jj absorb`: it treats each hunk as an
-atomic unit (whole hunk goes to one ancestor or stays), and only routes hunks
-where deleted/modified lines are blamed to a single mutable ancestor. Pure
-insertions and new files stay in `@`. Ambiguous hunks (lines from multiple
-ancestors) stay in `@` with the candidate list printed. Use `-i` to review
-each hunk and optionally retarget to a different ancestor.
+atomic unit (whole hunk goes to one ancestor or stays), and routes hunks
+where deleted/modified lines are blamed to a single mutable ancestor. When
+no blamed lines match (e.g. pure insertions), it falls back to the most
+recent mutable ancestor that touched the same file. New files stay in `@`.
+Ambiguous hunks (lines from multiple ancestors) stay in `@` with the
+candidate list printed. Use `-i` to review each hunk and optionally
+retarget to a different ancestor.
 
 ### Stacking changes
 
