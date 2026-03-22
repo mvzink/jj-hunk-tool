@@ -99,7 +99,6 @@ jj-hunk-tool restore <id> --from <rev> --into <rev>
 jj-hunk-tool absorb                              # absorb all matched hunks from @
 jj-hunk-tool absorb <id1> <id2>                  # absorb specific hunks only
 jj-hunk-tool absorb --dry-run                    # preview routing plan
-jj-hunk-tool absorb -i                           # interactive: review each hunk
 ```
 
 ### Hunk IDs
@@ -153,9 +152,9 @@ before continuing. See
 ### Splitting
 
 ```bash
-jj split -m "first half"               # interactive split of @
-jj split -r <rev> -m "first half"      # interactive split of any revision
-jj split path/to/file -m "these files" # non-interactive: split by file
+jj split -m "first half"               # split @ (opens diff editor)
+jj split -r <rev> -m "first half"      # split any revision
+jj split path/to/file -m "these files" # split by file (no diff editor)
 ```
 
 **Always pass `-m` to `jj split`** unless the user explicitly asks to compose
@@ -345,7 +344,6 @@ jj op show -p --no-pager                   # review what happened
 jj-hunk-tool absorb                        # auto-absorb all matched hunks
 jj-hunk-tool absorb --dry-run              # preview: which hunk → which ancestor
 jj-hunk-tool absorb <id>                   # absorb specific hunks only
-jj-hunk-tool absorb -i                     # interactive review per hunk
 ```
 
 `jj-hunk-tool absorb` differs from `jj absorb`: it treats each hunk as an
@@ -354,8 +352,7 @@ where deleted/modified lines are blamed to a single mutable ancestor. When
 no blamed lines match (e.g. pure insertions), it falls back to the most
 recent mutable ancestor that touched the same file. New files stay in `@`.
 Ambiguous hunks (lines from multiple ancestors) stay in `@` with the
-candidate list printed. Use `-i` to review each hunk and optionally
-retarget to a different ancestor.
+candidate list printed.
 
 ### Stacking changes
 
@@ -430,6 +427,11 @@ checkouts, and colocated repo caveats, see
 
 ## Common pitfalls for agents
 
+- **NEVER use `-i` / `--interactive` flags.** Commands like `jj split -i`,
+  `jj squash -i`, `jj restore -i`, `jj-hunk-tool absorb -i`, etc. open an
+  interactive diff editor or prompt that waits for terminal input. This will
+  hang indefinitely in a non-interactive agent context. Use `jj-hunk-tool`
+  with explicit hunk IDs instead of any `-i` flag.
 - Do NOT `jj abandon @` to "clean up" an empty working copy. It's normal.
 - **Always leave `@` empty when you're done working.** Use `jj commit -m "msg"`
   to finalize a change — NOT `jj describe`, which leaves your changes in `@`.
