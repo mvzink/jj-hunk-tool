@@ -1,6 +1,6 @@
 ---
 name: jj-surgeon
-description: Comprehensive guide for working with Jujutsu (jj) version control. Use whenever managing, viewing, creating, editing, splitting, squashing, rebasing, reordering, or otherwise reorganizing jj commits and change history — including hunk-level operations, bookmarks, conflict resolution, revsets, and all standard jj workflows.
+description: Comprehensive guide for working with Jujutsu (jj) version control. Use whenever inspecting or modifying jj changes or commits, including managing, viewing, creating, editing, splitting, squashing, rebasing, reordering, and changing history — including hunk-level operations, bookmarks, conflict resolution, revsets, and all standard jj workflows.
 ---
 
 # Jujutsu (jj) Complete Agent Guide
