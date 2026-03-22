@@ -1692,6 +1692,49 @@ fn absorb_interactive_quit() {
 }
 
 #[test]
+fn absorb_interactive_shows_absolute_line_numbers() {
+    let repo = TestRepo::new();
+    // Create a file with enough lines so the change is NOT at line 1
+    let mut content = String::new();
+    for i in 1..=20 {
+        content.push_str(&format!("line{i}\n"));
+    }
+    repo.commit_file("a.txt", &content);
+
+    // Commit X: modify line 10
+    let after_x = content.replace("line10", "line10_by_x");
+    repo.write_file("a.txt", &after_x);
+    repo.jj(&["commit", "-m", "change line10"]);
+
+    // @ modifies the same line
+    let working = after_x.replace("line10_by_x", "line10_absorbed");
+    repo.write_file("a.txt", &working);
+
+    // Run interactive absorb, accept
+    let output = repo.tool_with_stdin(&["absorb", "-i"], "a\n");
+
+    // Should show absolute line number 10 (not relative "1:")
+    assert!(
+        output.contains("10:") || output.contains(" 10 "),
+        "should show absolute line number 10, got: {output}"
+    );
+    // Should NOT show relative "1:" as the first changed line
+    // (context starts earlier, so first line number should be > 1)
+    let first_numbered = output
+        .lines()
+        .find(|l| {
+            let trimmed = l.trim();
+            trimmed.starts_with("1:") || trimmed.starts_with(" 1:")
+        });
+    // If context starts at line 7+ (3 lines of context), "1:" should not appear
+    assert!(
+        first_numbered.is_none(),
+        "should use absolute line numbers, not relative; found: {:?}",
+        first_numbered
+    );
+}
+
+#[test]
 fn absorb_interactive_retarget() {
     let repo = TestRepo::new();
     // Base with two separated regions

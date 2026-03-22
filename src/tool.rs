@@ -3,11 +3,163 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use console::Style;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::ThemeSet;
+use syntect::parsing::SyntaxSet;
+use syntect::util::as_24_bit_terminal_escaped;
 
 use git_surgeon::diff::DiffHunk;
 
 const PATCH_ENV_VAR: &str = "JJ_HUNK_TOOL_PATCH";
 const REVERSE_ENV_VAR: &str = "JJ_HUNK_TOOL_REVERSE";
+
+/// Display a hunk with syntax highlighting, diff colors, and absolute line numbers.
+/// Returns the formatted string (no ANSI codes if `color` is false).
+fn format_hunk_display(hunk: &DiffHunk, color: bool) -> String {
+    let mut out = String::new();
+
+    // Parse old/new start lines from @@ header
+    let (old_start, new_start) = parse_header_ranges(&hunk.header);
+
+    // Set up syntax highlighting
+    let ss = SyntaxSet::load_defaults_newlines();
+    let ts = ThemeSet::load_defaults();
+    let syntax = ss
+        .find_syntax_by_extension(
+            Path::new(&hunk.file)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or(""),
+        )
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+    let theme = &ts.themes["base16-ocean.dark"];
+    let mut highlighter = HighlightLines::new(syntax, theme);
+
+    let add_style = Style::new().green();
+    let del_style = Style::new().red();
+    let ctx_style = Style::new().dim();
+    let lineno_style = Style::new().dim();
+
+    let mut old_line = old_start;
+    let mut new_line = new_start;
+
+    // Compute max line number width for alignment
+    let max_line = old_start
+        .max(new_start)
+        + hunk.lines.len();
+    let width = max_line.to_string().len();
+
+    for line in &hunk.lines {
+        let (prefix, content, lineno) = if let Some(rest) = line.strip_prefix('+') {
+            let ln = new_line;
+            new_line += 1;
+            ("+", rest, ln)
+        } else if let Some(rest) = line.strip_prefix('-') {
+            let ln = old_line;
+            old_line += 1;
+            ("-", rest, ln)
+        } else if let Some(rest) = line.strip_prefix(' ') {
+            let ln = old_line;
+            old_line += 1;
+            new_line += 1;
+            (" ", rest, ln)
+        } else {
+            // Shouldn't happen, but handle gracefully
+            let ln = old_line;
+            old_line += 1;
+            new_line += 1;
+            (" ", line.as_str(), ln)
+        };
+
+        if color {
+            // Syntax-highlight the content
+            let content_with_nl = format!("{content}\n");
+            let highlighted = if prefix != "-" {
+                // Syntax highlight additions and context
+                highlighter
+                    .highlight_line(&content_with_nl, &ss)
+                    .map(|ranges| {
+                        let mut s = as_24_bit_terminal_escaped(&ranges, false);
+                        // Strip trailing newline from highlighted output
+                        if s.ends_with('\n') {
+                            s.pop();
+                        }
+                        // Reset at end
+                        s.push_str("\x1b[0m");
+                        s
+                    })
+                    .unwrap_or_else(|_| content.to_string())
+            } else {
+                // For deleted lines, just use the raw content (red coloring applied to whole line)
+                content.to_string()
+            };
+
+            let formatted_lineno = lineno_style.apply_to(format!("{lineno:>width$}"));
+            let formatted_line = match prefix {
+                "+" => format!(
+                    "{formatted_lineno} {} {highlighted}",
+                    add_style.apply_to("+")
+                ),
+                "-" => format!(
+                    "{formatted_lineno} {} {}",
+                    del_style.apply_to("-"),
+                    del_style.apply_to(content)
+                ),
+                _ => format!(
+                    "{formatted_lineno} {} {highlighted}",
+                    ctx_style.apply_to(" ")
+                ),
+            };
+            out.push_str(&formatted_line);
+        } else {
+            // Plain text: absolute line numbers, no color
+            out.push_str(&format!("{lineno:>width$}:{prefix}{content}"));
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
+/// Parse both old and new start lines from a @@ header.
+/// "@@ -old_start,count +new_start,count @@" → (old_start, new_start)
+fn parse_header_ranges(header: &str) -> (usize, usize) {
+    let header = header.trim();
+    let after_at = match header.strip_prefix("@@ -") {
+        Some(s) => s,
+        None => return (1, 1),
+    };
+
+    // Parse old range
+    let old_end = after_at.find(' ').unwrap_or(after_at.len());
+    let old_range_str = &after_at[..old_end];
+    let old_start = old_range_str
+        .split_once(',')
+        .map(|(s, _)| s)
+        .unwrap_or(old_range_str)
+        .parse::<usize>()
+        .unwrap_or(1);
+
+    // Parse new range (after "+")
+    let rest = &after_at[old_end..];
+    let new_start = rest
+        .find('+')
+        .and_then(|pos| {
+            let after_plus = &rest[pos + 1..];
+            let end = after_plus.find(' ').unwrap_or(after_plus.len());
+            let new_range_str = &after_plus[..end];
+            new_range_str
+                .split_once(',')
+                .map(|(s, _)| s)
+                .unwrap_or(new_range_str)
+                .parse::<usize>()
+                .ok()
+        })
+        .unwrap_or(1);
+
+    (old_start, new_start)
+}
 
 /// A hunk spec: (hunk_id, hunk, line_ranges).
 pub type HunkSpec<'a> = (&'a str, &'a DiffHunk, Vec<(usize, usize)>);
@@ -338,16 +490,18 @@ pub fn absorb_hunks(
                 .find(|(id, _)| *id == routing.hunk_id)
                 .map(|(_, h)| *h);
 
-            // Display hunk
+            // Display hunk with syntax highlighting and absolute line numbers
+            let is_tty = console::Term::stdout().is_term();
+            let header_style = if is_tty { Style::new().bold() } else { Style::new() };
             println!(
                 "\n{} {} (+{} -{})",
-                routing.hunk_id, routing.file, routing.additions, routing.deletions
+                header_style.apply_to(&routing.hunk_id),
+                header_style.apply_to(&routing.file),
+                routing.additions,
+                routing.deletions,
             );
             if let Some(hunk) = hunk_opt {
-                let width = hunk.lines.len().to_string().len();
-                for (i, line) in hunk.lines.iter().enumerate() {
-                    println!("{:>w$}:{line}", i + 1, w = width);
-                }
+                print!("{}", format_hunk_display(hunk, is_tty));
             }
 
             // Show current target
@@ -649,6 +803,52 @@ mod tests {
     #[test]
     fn parse_old_range_invalid() {
         assert_eq!(parse_old_range("not a header"), None);
+    }
+
+    #[test]
+    fn parse_header_ranges_both() {
+        assert_eq!(parse_header_ranges("@@ -7,3 +7,4 @@"), (7, 7));
+    }
+
+    #[test]
+    fn parse_header_ranges_different_starts() {
+        assert_eq!(parse_header_ranges("@@ -10,5 +12,3 @@"), (10, 12));
+    }
+
+    #[test]
+    fn parse_header_ranges_with_context_label() {
+        assert_eq!(
+            parse_header_ranges("@@ -1,3 +1,3 @@ fn main()"),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn parse_header_ranges_no_count() {
+        assert_eq!(parse_header_ranges("@@ -5 +5,2 @@"), (5, 5));
+    }
+
+    #[test]
+    fn format_hunk_display_absolute_lines() {
+        let hunk = DiffHunk {
+            file: "test.rs".into(),
+            old_file: "test.rs".into(),
+            new_file: "test.rs".into(),
+            file_header: String::new(),
+            header: "@@ -7,3 +7,3 @@".into(),
+            lines: vec![
+                " context".into(),
+                "-old_line".into(),
+                "+new_line".into(),
+                " context2".into(),
+            ],
+            unsupported_metadata: None,
+        };
+        let output = format_hunk_display(&hunk, false);
+        // Should contain absolute line numbers starting at 7
+        assert!(output.contains(" 7:"), "should start at line 7: {output}");
+        assert!(output.contains(" 8:"), "should have line 8: {output}");
+        assert!(!output.contains(" 1:"), "should NOT have line 1: {output}");
     }
 
     #[test]
