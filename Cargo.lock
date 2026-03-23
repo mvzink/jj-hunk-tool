@@ -367,8 +367,9 @@ dependencies = [
 
 [[package]]
 name = "git-surgeon"
-version = "0.1.13"
-source = "git+https://github.com/mvzink/git-surgeon.git?branch=lib#1b06d778d7ea4e9ddc5b118a3eba8f710921704c"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5190d83552bf73c839de62887b2633f30fff077e74a99020983dac89269ef77"
 dependencies = [
  "anyhow",
  "clap",

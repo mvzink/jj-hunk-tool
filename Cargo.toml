@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 console = "0.15"
-git-surgeon = { git = "https://github.com/mvzink/git-surgeon.git", branch = "lib" }
+git-surgeon = "0.1.14"
 dialoguer = "0.11"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 tempfile = "3"
