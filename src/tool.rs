@@ -351,10 +351,57 @@ pub fn absorb_hunks(
         return Ok(());
     }
 
-    // 2. Compute annotations for each changed file
+    // 2. Pre-fetch annotations and file-ancestor data in parallel
     let parent_rev = format!("{source}-");
-    let mut annotations_cache: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
+
+    let unique_files: Vec<String> = {
+        let mut files = std::collections::HashSet::new();
+        for (_, hunk) in selected {
+            if hunk.old_file != "/dev/null" {
+                files.insert(hunk.file.clone());
+            }
+        }
+        files.into_iter().collect()
+    };
+
+    let (annotations_cache, file_ancestors_cache) = std::thread::scope(|s| {
+        let ann_handles: Vec<_> = unique_files
+            .iter()
+            .map(|file| {
+                let pr = &parent_rev;
+                s.spawn(move || (file.clone(), diff::get_jj_annotations(pr, file)))
+            })
+            .collect();
+
+        let fa_handles: Vec<_> = unique_files
+            .iter()
+            .map(|file| {
+                s.spawn(move || (file.clone(), diff::get_ancestors_touching_file(source, file)))
+            })
+            .collect();
+
+        let annotations: std::collections::HashMap<String, Vec<String>> = ann_handles
+            .into_iter()
+            .filter_map(|h| {
+                let (f, r) = h.join().ok()?;
+                r.ok().map(|a| (f, a))
+            })
+            .collect();
+
+        let file_ancestors: std::collections::HashMap<String, Vec<String>> = fa_handles
+            .into_iter()
+            .filter_map(|h| {
+                let (f, r) = h.join().ok()?;
+                r.ok().map(|a| (f, a))
+            })
+            .collect();
+
+        (annotations, file_ancestors)
+    });
+
+    // Pre-fetch change descriptions for all ancestors in one batch
+    let ancestor_ids: Vec<String> = ancestors.iter().cloned().collect();
+    let ancestor_descs = diff::get_change_descriptions(&ancestor_ids).unwrap_or_default();
 
     // 3. Route each hunk
     let mut routings: Vec<(HunkRouting, HunkFingerprint)> = Vec::new();
@@ -381,30 +428,23 @@ pub fn absorb_hunks(
             continue;
         }
 
-        // Get annotations for this file (cached)
-        let annotations = if let Some(cached) = annotations_cache.get(&hunk.file) {
-            cached.clone()
-        } else {
-            match diff::get_jj_annotations(&parent_rev, &hunk.file) {
-                Ok(ann) => {
-                    annotations_cache.insert(hunk.file.clone(), ann.clone());
-                    ann
-                }
-                Err(_) => {
-                    routings.push((
-                        HunkRouting {
-                            hunk_id: id.clone(),
-                            file: hunk.file.clone(),
-                            additions,
-                            deletions,
-                            target: None,
-                            candidates: vec![],
-                            reason: "annotation failed",
-                        },
-                        fingerprint,
-                    ));
-                    continue;
-                }
+        // Get annotations for this file (from pre-fetched cache)
+        let annotations = match annotations_cache.get(&hunk.file) {
+            Some(ann) => ann,
+            None => {
+                routings.push((
+                    HunkRouting {
+                        hunk_id: id.clone(),
+                        file: hunk.file.clone(),
+                        additions,
+                        deletions,
+                        target: None,
+                        candidates: vec![],
+                        reason: "annotation failed",
+                    },
+                    fingerprint,
+                ));
+                continue;
             }
         };
 
@@ -412,20 +452,15 @@ pub fn absorb_hunks(
         let old_range = parse_old_range(&hunk.header);
 
         // Collect mutable ancestor change IDs from the hunk's changed lines.
-        // Walk the hunk lines, track old-file line numbers, and only check
-        // annotations for deleted/modified lines (prefix '-') and adjacent
-        // context for pure insertions.
         let mut ancestor_hits: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
 
         if let Some((old_start, _old_count)) = old_range {
             let has_deletions = hunk.lines.iter().any(|l| l.starts_with('-'));
             if has_deletions {
-                // Track which old-file lines are deleted/modified
                 let mut old_line = old_start; // 1-based
                 for line in &hunk.lines {
                     if line.starts_with('-') {
-                        // This old-file line is being removed/changed
                         if let Some(change_id) = annotations.get(old_line.saturating_sub(1)) {
                             if ancestors.contains(change_id) {
                                 *ancestor_hits.entry(change_id.clone()).or_insert(0) += 1;
@@ -440,9 +475,6 @@ pub fn absorb_hunks(
                     }
                 }
             }
-            // Pure insertions (no '-' lines): leave as unmatched.
-            // There are no deleted/modified lines to blame, so we can't
-            // determine which ancestor "owns" this region.
         }
 
         let (target, candidates, reason) = if ancestor_hits.len() == 1 {
@@ -451,8 +483,8 @@ pub fn absorb_hunks(
         } else if ancestor_hits.is_empty() {
             // Fallback: find the most recent mutable ancestor that touched this file
             if hunk.old_file != "/dev/null" {
-                match diff::get_ancestors_touching_file(source, &hunk.file) {
-                    Ok(file_ancestors) if !file_ancestors.is_empty() => {
+                match file_ancestors_cache.get(&hunk.file) {
+                    Some(file_ancestors) if !file_ancestors.is_empty() => {
                         let target = file_ancestors[0].clone();
                         (Some(target), vec![], "matched (file)")
                     }
@@ -517,7 +549,7 @@ pub fn absorb_hunks(
 
             // Show current target
             let target_desc = if let Some(ref t) = routing.target {
-                let desc = diff::get_change_description(t).unwrap_or_default();
+                let desc = ancestor_descs.get(t).cloned().unwrap_or_default();
                 if desc.is_empty() {
                     format!("Target: {t}")
                 } else {
@@ -528,7 +560,7 @@ pub fn absorb_hunks(
                     .candidates
                     .iter()
                     .map(|c| {
-                        let desc = diff::get_change_description(c).unwrap_or_default();
+                        let desc = ancestor_descs.get(c).cloned().unwrap_or_default();
                         if desc.is_empty() {
                             c.clone()
                         } else {
@@ -567,7 +599,7 @@ pub fn absorb_hunks(
                         // Show numbered list of ancestors
                         println!("Select target:");
                         for (i, cid) in ancestor_list.iter().enumerate() {
-                            let desc = diff::get_change_description(cid).unwrap_or_default();
+                            let desc = ancestor_descs.get(cid).cloned().unwrap_or_default();
                             if desc.is_empty() {
                                 println!("  {}: {cid}", i + 1);
                             } else {
@@ -582,9 +614,7 @@ pub fn absorb_hunks(
                             if n >= 1 && n <= ancestor_list.len() {
                                 routing.target = Some(ancestor_list[n - 1].clone());
                                 routing.reason = "retargeted";
-                                let desc =
-                                    diff::get_change_description(&ancestor_list[n - 1])
-                                        .unwrap_or_default();
+                                let desc = ancestor_descs.get(&ancestor_list[n - 1]).cloned().unwrap_or_default();
                                 println!("→ Retargeted to {}{}", ancestor_list[n - 1],
                                     if desc.is_empty() { String::new() } else { format!(" ({desc})") });
                                 break;
@@ -629,7 +659,7 @@ pub fn absorb_hunks(
                     .candidates
                     .iter()
                     .map(|c| {
-                        let desc = diff::get_change_description(c).unwrap_or_default();
+                        let desc = ancestor_descs.get(c).cloned().unwrap_or_default();
                         if desc.is_empty() {
                             c.clone()
                         } else {
@@ -663,7 +693,7 @@ pub fn absorb_hunks(
     println!("{verb} {} hunk(s):", absorbed.len());
     for (r, _) in &absorbed {
         let target = r.target.as_ref().unwrap();
-        let desc = diff::get_change_description(target).unwrap_or_default();
+        let desc = ancestor_descs.get(target).cloned().unwrap_or_default();
         let desc_part = if desc.is_empty() {
             String::new()
         } else {
@@ -681,7 +711,7 @@ pub fn absorb_hunks(
                 .candidates
                 .iter()
                 .map(|c| {
-                    let desc = diff::get_change_description(c).unwrap_or_default();
+                    let desc = ancestor_descs.get(c).cloned().unwrap_or_default();
                     if desc.is_empty() {
                         c.clone()
                     } else {
