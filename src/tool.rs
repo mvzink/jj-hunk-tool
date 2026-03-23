@@ -181,23 +181,7 @@ pub fn build_combined_patch(specs: &[HunkSpec<'_>], reverse: bool) -> Result<Str
     Ok(combined)
 }
 
-/// Write a temp jj config TOML that defines jj-hunk-tool as a merge tool
-/// and overrides the user's editor to prevent interactive prompts.
-fn write_tool_config(exe: &Path) -> Result<tempfile::NamedTempFile> {
-    let mut config_file = tempfile::Builder::new()
-        .suffix(".toml")
-        .tempfile()
-        .context("creating temp config file")?;
-    write!(
-        config_file,
-        "[ui]\neditor = \"true\"\n\n[merge-tools.jj-hunk-tool]\nprogram = {exe:?}\nedit-args = [\"_jj-tool\", \"$left\", \"$right\"]\n",
-        exe = exe.display().to_string(),
-    )
-    .context("writing config")?;
-    Ok(config_file)
-}
-
-/// Run a jj command with our tool configured.
+/// Run a jj command with our tool configured via inline --config flags.
 fn run_jj_with_tool(jj_args: &[&str], patch_content: &str, reverse: bool) -> Result<()> {
     let exe = std::env::current_exe().context("finding own executable")?;
 
@@ -206,11 +190,16 @@ fn run_jj_with_tool(jj_args: &[&str], patch_content: &str, reverse: bool) -> Res
         .write_all(patch_content.as_bytes())
         .context("writing patch")?;
 
-    let config_file = write_tool_config(&exe)?;
+    let exe_str = exe.display().to_string();
+    let config_program = format!("merge-tools.jj-hunk-tool.program={exe_str:?}");
+    let config_edit_args =
+        r#"merge-tools.jj-hunk-tool.edit-args=["_jj-tool", "$left", "$right"]"#;
 
     let mut cmd = Command::new("jj");
     cmd.args(jj_args);
-    cmd.args(["--config-file", &config_file.path().display().to_string()]);
+    cmd.args(["--config", r#"ui.editor="true""#]);
+    cmd.args(["--config", &config_program]);
+    cmd.args(["--config", config_edit_args]);
     cmd.args(["--tool", "jj-hunk-tool"]);
     cmd.env(PATCH_ENV_VAR, patch_file.path());
     if reverse {
