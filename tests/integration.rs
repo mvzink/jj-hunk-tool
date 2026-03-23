@@ -1916,6 +1916,62 @@ fn absorb_ambiguous_hunk_stays() {
 }
 
 #[test]
+fn absorb_multiple_files_to_different_ancestors() {
+    let repo = TestRepo::new();
+    // Base: create 3 files
+    repo.commit_file("a.txt", "aaa\n");
+    repo.commit_file("b.txt", "bbb\n");
+    repo.commit_file("c.txt", "ccc\n");
+
+    // Commit X: modify a.txt
+    repo.write_file("a.txt", "aaa_by_x\n");
+    repo.jj(&["commit", "-m", "change a"]);
+
+    // Commit Y: modify b.txt
+    repo.write_file("b.txt", "bbb_by_y\n");
+    repo.jj(&["commit", "-m", "change b"]);
+
+    // Commit Z: modify c.txt
+    repo.write_file("c.txt", "ccc_by_z\n");
+    repo.jj(&["commit", "-m", "change c"]);
+
+    // @: modify all three again
+    repo.write_file("a.txt", "aaa_absorbed\n");
+    repo.write_file("b.txt", "bbb_absorbed\n");
+    repo.write_file("c.txt", "ccc_absorbed\n");
+
+    repo.tool_ok(&["absorb"]);
+
+    // @ should be empty
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.trim().is_empty(),
+        "working copy should be empty after absorb, got: {wc_diff}"
+    );
+
+    // X (now @---) should have aaa_absorbed
+    let x_diff = repo.jj_diff("@---");
+    assert!(
+        x_diff.contains("aaa_absorbed"),
+        "X should have a.txt change, got: {x_diff}"
+    );
+
+    // Y (now @--) should have bbb_absorbed
+    let y_diff = repo.jj_diff("@--");
+    assert!(
+        y_diff.contains("bbb_absorbed"),
+        "Y should have b.txt change, got: {y_diff}"
+    );
+
+    // Z (now @-) should have ccc_absorbed
+    let z_diff = repo.jj_diff("@-");
+    assert!(
+        z_diff.contains("ccc_absorbed"),
+        "Z should have c.txt change, got: {z_diff}"
+    );
+}
+
+#[test]
 fn install_skill_prints_success_message() {
     let target = tempfile::tempdir().unwrap();
     let output = run_install_skill(&["--target", target.path().to_str().unwrap()]);
