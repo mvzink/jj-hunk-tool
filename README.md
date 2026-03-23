@@ -1,5 +1,7 @@
 # jj-hunk-tool
 
+For when you wish `jj split --interactive` wasn't interactive.
+
 Hunk-level operations for [Jujutsu (jj)](https://github.com/jj-vcs/jj), built on [git-surgeon](https://github.com/raine/git-surgeon).
 
 jj is great at rewriting history at the commit and file level (split, squash, rebase, etc.), but it doesn't have a way to address individual hunks or lines from the command line. You have to go through a diff editor, e.g. the built-in one you get with `jj split -i`. jj-hunk-tool assigns stable IDs to each hunk in a diff so you can refer to them, and to specific line ranges within them, in commands like `split`, `squash`, `diffedit`, and `restore`.
@@ -14,7 +16,7 @@ cargo install --git https://github.com/mvzink/jj-hunk-tool.git
 
 ## Usage
 
-```
+```shell
 # List hunks with stable IDs (includes line numbers for range selection)
 jj-hunk-tool hunks [-r <rev>] [--compact] [--file <path>]
 
@@ -52,22 +54,6 @@ jj-hunk-tool split abc1234:1-3,7-9  # multiple ranges
 | `jj restore -i` | `jj-hunk-tool restore <hunks>` | hunks to undo |
 | `jj absorb` | `jj-hunk-tool absorb` | hunks auto-routed to ancestors |
 
-## Common patterns
-
-```sh
-# Discard specific hunks from working copy (like git checkout -p)
-jj-hunk-tool restore <hunk-id>...
-
-# Split working copy into two commits
-jj-hunk-tool split <hunk-id>... -m "first part"
-
-# Move specific hunks from @ into parent
-jj-hunk-tool squash <hunk-id>... -m "squashed"
-
-# Split a historical revision
-jj-hunk-tool split <hunk-id>... -r <rev> -m "extracted"
-```
-
 ## Absorb
 
 `jj-hunk-tool absorb` automatically moves hunks from `@` into the mutable ancestor commits that introduced the overlapping code. It's similar to `jj absorb`, but operates at hunk granularity rather than per-line.
@@ -76,7 +62,7 @@ jj-hunk-tool split <hunk-id>... -r <rev> -m "extracted"
 
 1. **Annotate**: For each file changed in `@`, runs `jj file annotate` on the parent to find which commit introduced each line.
 2. **Route**: For each hunk, checks the deleted/modified lines (`-` lines). If they all blame to a single mutable ancestor, the hunk is routed there. If they blame to multiple ancestors, the hunk is ambiguous and stays in `@`.
-3. **Execute**: For each target ancestor, runs `jj squash --from @ --into <target>` with the tool protocol, moving only the matched hunks.
+3. **Execute**: For each target ancestor, runs `jj-hunk-tool squash --from @ --into <target>` with the tool protocol, moving only the matched hunks.
 
 Key differences from `jj absorb`:
 - **Atomic hunks**: Each hunk goes to one target or stays. `jj absorb` can split a single hunk across targets at the line level.
