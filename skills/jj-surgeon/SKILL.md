@@ -33,9 +33,9 @@ follow when a commit is rewritten. See
 
 **Editing history is safe — but watch for conflicts.** jj rewrites commits
 freely and automatically rebases descendants. If a rebase causes overlapping
-changes, jj records a conflict in the descendant commit. Conflicts are data (not
-blocking states) but must be resolved before the code compiles. Always check for
-conflicts after rewriting ancestors. See
+changes, jj records a conflict in the descendant commit and warns you.
+Conflicts are data (not blocking states) but must be resolved before the code
+compiles. See
 [references/conflict-resolution.md](references/conflict-resolution.md).
 
 **Operation log.** Every command creates an operation entry. `jj undo` reverts
@@ -134,9 +134,8 @@ opens `$EDITOR` for each resulting commit.
 diff editor. Use `jj split path/to/file` for file-level splits or
 `jj-hunk-tool split` for hunk-level splits.
 
-Splitting rewrites the target revision, so all descendants are rebased. If
-descendants touch the same code, conflicts appear. Check with
-`jj log -r 'conflicts()'` after splitting. See
+Splitting rewrites the target revision, so all descendants are rebased. jj
+will warn if this creates conflicts — resolve them before continuing. See
 [references/conflict-resolution.md](references/conflict-resolution.md).
 
 ## Squashing and absorbing
@@ -152,8 +151,8 @@ jj-hunk-tool squash <id> --from <rev> --into <rev> -m "msg"
 **Always pass `-m` to `jj squash`.** Without `-m`, jj opens `$EDITOR`.
 
 **Warning:** `jj squash` rewrites the destination commit, causing all its
-descendants to be rebased. If descendants modified the same lines, this creates
-conflicts. Check with `jj log -r 'conflicts()'` after squashing. See
+descendants to be rebased. jj will warn if this creates conflicts — resolve
+them before continuing. See
 [references/conflict-resolution.md](references/conflict-resolution.md).
 
 ### Absorbing
@@ -208,8 +207,8 @@ jj rebase -r <rev> -B <before>          # insert before
 jj rebase -s @ -d main                  # rebase current stack onto main
 ```
 
-Rebasing can create conflicts in the moved commits if the new base has diverged.
-Check `jj log -r 'conflicts()'` after rebasing. See
+Rebasing can create conflicts if the new base has diverged. jj will warn if
+this happens — resolve them before continuing. See
 [references/conflict-resolution.md](references/conflict-resolution.md).
 
 ## Undoing operations
@@ -363,9 +362,10 @@ jj op restore <op-id>                   # restore to any point
   Use `mutable()` revset to find what you can edit.
 - `jj squash` without args squashes `@` into `@-`. With `--from`/`--into` you
   can squash between any two mutable commits.
-- After any history rewrite, check `jj log -r 'conflicts()'` for conflicts.
-  Resolve immediately — cascading conflicts are much harder to fix. See
+- After any history rewrite, jj will warn if conflicts were created. Resolve
+  them immediately — cascading conflicts are much harder to fix. See
   [references/conflict-resolution.md](references/conflict-resolution.md).
+  Use `jj log -r 'conflicts()'` if you need to find all conflicted commits.
 
 ## Reference docs
 

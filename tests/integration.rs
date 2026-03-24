@@ -1978,3 +1978,64 @@ fn install_skill_prints_success_message() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Installed"), "should print success message");
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Conflict reporting
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn split_reports_rebase_of_descendants() {
+    let repo = TestRepo::new();
+
+    // Create a commit with two files, then a descendant that modifies one
+    repo.write_file("a.txt", "aaa\n");
+    repo.write_file("b.txt", "bbb\n");
+    repo.jj(&["commit", "-m", "add both files"]);
+
+    repo.write_file("a.txt", "aaa modified\n");
+    repo.jj(&["commit", "-m", "modify a.txt"]);
+
+    // Split the ancestor by pulling a.txt out — descendants get rebased
+    let hunk_id = repo.get_hunk_id_for_file("a.txt", &["-r", "@--"]);
+    let (stdout, stderr) = repo.tool_output(&[
+        "split", &hunk_id, "-r", "@--", "-m", "just a.txt",
+    ]);
+    let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        combined.contains("Rebased"),
+        "jj-hunk-tool split should pass through jj's rebase messages.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+#[test]
+fn squash_reports_conflicts_in_descendants() {
+    let repo = TestRepo::new();
+
+    // Commit A: create file with some content
+    repo.write_file("file.txt", "line 1\nline 2\nline 3\n");
+    repo.jj(&["commit", "-m", "A: initial"]);
+
+    // Commit B (descendant of A): modify the same lines
+    repo.write_file("file.txt", "line 1\nmodified by B\nline 3\n");
+    repo.jj(&["commit", "-m", "B: modify line 2"]);
+
+    // Now in @, make a conflicting change and squash it into A.
+    repo.write_file("file.txt", "line 1\nmodified by fixup\nline 3\n");
+
+    // Get the hunk ID
+    let hunk_id = repo.get_single_hunk_id(&[]);
+
+    // Find revision A's change ID
+    let log = repo.jj(&["log", "--no-graph", "-r", "@--", "-T", "change_id.short()"]);
+    let a_id = log.trim();
+
+    // Squash the hunk into A — this should conflict with B
+    let (stdout, stderr) = repo.tool_output(&["squash", &hunk_id, "--into", a_id, "-m", "A: fixed"]);
+    let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        combined.contains("conflict"),
+        "jj-hunk-tool squash should report conflicts in descendants.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
