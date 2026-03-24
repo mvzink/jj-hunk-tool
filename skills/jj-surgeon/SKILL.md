@@ -1,6 +1,6 @@
 ---
 name: jj-surgeon
-description: Comprehensive guide for working with Jujutsu (jj) version control. Use whenever inspecting or modifying jj changes or commits, including managing, viewing, creating, editing, splitting, squashing, rebasing, reordering, and changing history — including hunk-level operations, bookmarks, conflict resolution, revsets, and all standard jj workflows.
+description: Comprehensive guide for working with Jujutsu (jj) version control. Use whenever inspecting or modifying jj changes or commits, including managing, viewing, creating, editing, splitting, squashing, rebasing, reordering, and changing history — including hunk-level operations, bookmarks, conflict resolution, revsets, bisecting, and all standard jj workflows.
 ---
 
 # Jujutsu (jj) Agent Guide
@@ -98,7 +98,12 @@ jj new -B <rev>                         # insert before <rev>
 jj commit -m "message"                  # set description on @, create new empty @
 jj describe -m "message"                # set/update description (default: @)
 jj describe <rev> -m "message"          # describe a specific revision
+jj edit <rev>                           # set <rev> as @ (edit a historical change)
 ```
+
+After `jj edit <rev>`, any file changes you make modify `<rev>` directly and
+all descendants are rebased. Check `jj log -r 'conflicts()'` afterward. When
+done, use `jj new` to stop editing and create a fresh empty `@`.
 
 ## Viewing changes
 
@@ -211,7 +216,7 @@ Check `jj log -r 'conflicts()'` after rebasing. See
 
 ```bash
 jj undo                                 # undo last operation
-jj op log --no-pager                    # view operation history
+jj op log --no-pager -n 10              # view recent operation history
 jj op restore <op-id>                   # restore to any past state
 jj revert -r <rev> -d @                 # create reverse-patch of <rev> on @
 jj abandon <rev>                        # drop a revision, rebase descendants
