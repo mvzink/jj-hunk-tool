@@ -3,7 +3,7 @@ name: jj-surgeon
 description: Comprehensive guide for working with Jujutsu (jj) version control. Use whenever inspecting or modifying jj changes or commits, including managing, viewing, creating, editing, splitting, squashing, rebasing, reordering, and changing history — including hunk-level operations, bookmarks, conflict resolution, revsets, and all standard jj workflows.
 ---
 
-# Jujutsu (jj) Complete Agent Guide
+# Jujutsu (jj) Agent Guide
 
 ## Key concepts
 
@@ -12,7 +12,7 @@ snapshotted into commit `@` at the start of every jj command. There is no
 staging area. All file changes are immediately part of `@`.
 
 **"Clean" means an empty `@`.** When `@` has no diff vs its parent, the working
-copy is clean. You do NOT need to `jj abandon` an empty `@` -- it is harmless
+copy is clean. You do NOT need to `jj abandon` an empty `@` — it is harmless
 and jj creates a new empty `@` automatically after operations that consume it.
 **Always finish your work with a clean `@`.** Use `jj commit -m "message"`
 (not `jj describe`) when you're done with a change — `jj commit` finalizes `@`
@@ -21,14 +21,15 @@ and creates a new empty working copy on top. If you use `jj describe` instead,
 equivalent of leaving a dirty working copy in Git.
 
 **Change IDs vs commit IDs.** Every commit has two identifiers:
-- *Change ID* -- stable across rewrites (rebase, amend, squash). Shown as
+- *Change ID* — stable across rewrites (rebase, amend, squash). Shown as
   reversed-hex letters (k-z). Use this to refer to changes you plan to rewrite.
-- *Commit ID* -- content hash (standard hex). Changes on every rewrite. Matches
+- *Commit ID* — content hash (standard hex). Changes on every rewrite. Matches
   the Git SHA in colocated repos. Becomes permanent once immutable.
 
 **No branches, only bookmarks.** Bookmarks are named pointers to commits. They
 do NOT advance automatically on new commits (unlike Git branches). They DO
-follow when a commit is rewritten. Bookmarks map to Git branches for push/fetch.
+follow when a commit is rewritten. See
+[references/git-interop.md](references/git-interop.md).
 
 **Editing history is safe — but watch for conflicts.** jj rewrites commits
 freely and automatically rebases descendants. If a rebase causes overlapping
@@ -36,12 +37,6 @@ changes, jj records a conflict in the descendant commit. Conflicts are data (not
 blocking states) but must be resolved before the code compiles. Always check for
 conflicts after rewriting ancestors. See
 [references/conflict-resolution.md](references/conflict-resolution.md).
-
-**Workspaces share one repo.** Each workspace has its own `@` (working copy),
-but all share the same commit graph and operation log. Commits made in any
-workspace are immediately visible in all others — no merge, pull, or fetch
-needed. Unlike git worktrees, there's no branch-locking or merge-back workflow.
-See [references/workspaces.md](references/workspaces.md).
 
 **Operation log.** Every command creates an operation entry. `jj undo` reverts
 the last operation. `jj op restore <id>` jumps to any past state.
@@ -58,47 +53,21 @@ jj log --no-pager -p --git -r <revset>
 # These prevent pager hangs and ensure machine-readable unified diff output.
 ```
 
-## jj-hunk-tool commands
+## Hunk-level operations
 
-Use `jj-hunk-tool` for non-interactive hunk-level selection -- the one thing jj
-cannot do without an interactive editor. Each command mirrors its jj counterpart
-— just pass hunk IDs instead of `-i`.
+Several jj commands (`split`, `squash`, `diffedit`, `restore`) can operate at
+the hunk level, but only through an interactive diff editor — **which agents
+must never use**. `jj-hunk-tool` provides non-interactive equivalents using
+stable hunk IDs. These are shown alongside their native jj counterparts
+throughout this guide.
+
+### Listing hunks
 
 ```bash
-# List hunks with IDs, file paths, +/- counts, and numbered lines
-jj-hunk-tool hunks
-jj-hunk-tool hunks -r <revset>          # from a specific revision
+jj-hunk-tool hunks                      # list hunks in @ with IDs and line numbers
+jj-hunk-tool hunks -r <rev>             # from a specific revision
 jj-hunk-tool hunks --file src/main.rs   # filter to one file
 jj-hunk-tool hunks --compact            # brief preview (no line numbers)
-
-# Output unified diff patch for selected hunks
-jj-hunk-tool patch <id1> <id2:1-10> ...
-jj-hunk-tool patch <id>:5-30,40-50 -r <revset>
-jj-hunk-tool patch --reverse <id>
-
-# Split selected hunks out of a revision (like jj split)
-jj-hunk-tool split <id1> <id2> -m "message"
-jj-hunk-tool split <id>:1-11 <id2> -r <revset> -m "split out"
-jj-hunk-tool split <id> -r <revset> -p   # parallel siblings
-jj-hunk-tool split <id> -A <rev>         # insert after
-
-# Move selected hunks into another revision (like jj squash)
-jj-hunk-tool squash <id1> <id2> -m "squashed"
-jj-hunk-tool squash <id> -r <revset> -m "squash into parent"
-jj-hunk-tool squash <id> --from <rev> --into <rev> -m "move hunks"
-
-# Rewrite a revision in-place keeping only selected hunks (like jj diffedit)
-jj-hunk-tool diffedit <id1> <id2> -r <revset>
-
-# Undo selected hunks (like jj restore)
-jj-hunk-tool restore <id1> <id2>                 # default: undo from @
-jj-hunk-tool restore <id> -c <revset>            # undo from specific revision
-jj-hunk-tool restore <id> --from <rev> --into <rev>
-
-# Auto-absorb hunks into ancestors (like jj absorb, but hunk-aware)
-jj-hunk-tool absorb                              # absorb all matched hunks from @
-jj-hunk-tool absorb <id1> <id2>                  # absorb specific hunks only
-jj-hunk-tool absorb --dry-run                    # preview routing plan
 ```
 
 ### Hunk IDs
@@ -110,9 +79,15 @@ jj-hunk-tool absorb --dry-run                    # preview routing plan
 - Line ranges: `id:5-30` (1-based, from `hunks` output)
 - Multiple ranges: `id:2-6,34-37`
 
-## Native jj commands
+### Generating patches
 
-### Creating and describing changes
+```bash
+jj-hunk-tool patch <id1> <id2:1-10>             # unified diff for selected hunks
+jj-hunk-tool patch <id>:5-30,40-50 -r <rev>     # with line ranges and revision
+jj-hunk-tool patch --reverse <id>                # reverse patch
+```
+
+## Creating and describing changes
 
 ```bash
 jj new                                  # new empty change on top of @
@@ -125,72 +100,7 @@ jj describe -m "message"                # set/update description (default: @)
 jj describe <rev> -m "message"          # describe a specific revision
 ```
 
-### Squashing and absorbing
-
-```bash
-jj squash -m "msg"                      # squash @ into its parent
-jj squash -r <rev> -m "msg"            # squash <rev> into its parent
-jj squash --from <src> --into <dst> -m "msg"  # move changes between revisions
-jj absorb                               # auto-distribute @ changes into ancestors by blame
-jj absorb --from <rev>                  # absorb from specific revision
-```
-
-**Always pass `-m` to `jj squash`** unless the user explicitly asks to compose
-the message in their editor. Without `-m`, jj opens `$EDITOR`, which disrupts
-the user's workflow.
-
-`jj absorb` is extremely powerful: it looks at each changed line, finds the
-mutable ancestor that last touched it, and moves the change there. Ambiguous
-lines stay in the source. Always review with `jj op show -p` afterward.
-
-**Warning:** `jj squash` rewrites the destination commit, causing all its
-descendants to be rebased. If descendants modified the same lines, this creates
-conflicts. Check with `jj log -r 'conflicts()'` after squashing and resolve
-before continuing. See
-[references/conflict-resolution.md](references/conflict-resolution.md).
-
-### Splitting
-
-```bash
-jj split -m "first half"               # split @ (opens diff editor)
-jj split -r <rev> -m "first half"      # split any revision
-jj split path/to/file -m "these files" # split by file (no diff editor)
-```
-
-**Always pass `-m` to `jj split`** unless the user explicitly asks to compose
-the message in their editor. Without `-m`, jj opens `$EDITOR` for each
-resulting commit, disrupting the user's workflow. For non-interactive
-hunk-level splitting, use `jj-hunk-tool split -r`.
-
-### Rebasing and reordering
-
-```bash
-jj rebase -r <rev> -o <dest>            # move single commit onto dest (alias: -d)
-jj rebase -s <rev> -o <dest>            # move commit + descendants
-jj rebase -b <rev> -o <dest>            # move whole branch
-jj rebase -r <rev> -A <after>           # insert after (reorder)
-jj rebase -r <rev> -B <before>          # insert before
-jj rebase -s @ -o main                  # rebase current stack onto main
-```
-
-Rebasing can create conflicts in the moved commits if the new base has diverged.
-Check `jj log -r 'conflicts()'` after rebasing. See
-[references/conflict-resolution.md](references/conflict-resolution.md).
-
-### Undoing and restoring
-
-```bash
-jj undo                                 # undo last operation
-jj op log --no-pager                    # view operation history
-jj op restore <op-id>                   # restore to any past state
-jj restore <paths...>                   # restore files in @ from parent
-jj restore --from <rev> <paths...>      # restore files from specific revision
-jj restore -c <rev>                     # undo changes introduced by <rev>
-jj revert -r <rev> -o @                 # create reverse-patch of <rev> on @
-jj abandon <rev>                        # drop a revision, rebase descendants
-```
-
-### Viewing changes
+## Viewing changes
 
 ```bash
 jj status                               # working copy status
@@ -202,28 +112,117 @@ jj log --no-pager -r '<revset>' -p --git  # graph with patches
 jj file annotate <path>                 # blame (which change introduced each line)
 ```
 
-### Bookmarks and pushing
+## Splitting
 
 ```bash
-jj bookmark create <name> -r <rev>      # create bookmark (default rev: @)
-jj bookmark set <name> -r <rev>         # move bookmark
-jj bookmark delete <name>               # delete bookmark
-jj bookmark list --no-pager             # list bookmarks
-jj git push -b <name>                   # push bookmark to remote
-jj git push -c <rev>                    # create bookmark from change ID and push
-jj git fetch                            # fetch from remote
+jj split path/to/file -m "these files"           # split by file
+jj-hunk-tool split <id1> <id2> -m "msg"          # split by hunk
+jj-hunk-tool split <id>:1-11 -r <rev> -m "msg"   # hunk + line range from other rev
+jj-hunk-tool split <id> -r <rev> -p              # parallel siblings
+jj-hunk-tool split <id> -A <rev>                 # insert after
 ```
 
-### Conflicts
+**Always pass `-m`** to `jj split` and `jj-hunk-tool split`. Without `-m`, jj
+opens `$EDITOR` for each resulting commit.
+
+**Do not use bare `jj split` (without file paths).** It opens an interactive
+diff editor. Use `jj split path/to/file` for file-level splits or
+`jj-hunk-tool split` for hunk-level splits.
+
+Splitting rewrites the target revision, so all descendants are rebased. If
+descendants touch the same code, conflicts appear. Check with
+`jj log -r 'conflicts()'` after splitting. See
+[references/conflict-resolution.md](references/conflict-resolution.md).
+
+## Squashing and absorbing
+
+```bash
+jj squash -m "msg"                                # squash @ into parent
+jj squash -r <rev> -m "msg"                       # squash <rev> into its parent
+jj squash --from <src> --into <dst> -m "msg"      # move changes between revisions
+jj-hunk-tool squash <id1> <id2> -m "msg"          # squash specific hunks into parent
+jj-hunk-tool squash <id> --from <rev> --into <rev> -m "msg"
+```
+
+**Always pass `-m` to `jj squash`.** Without `-m`, jj opens `$EDITOR`.
+
+**Warning:** `jj squash` rewrites the destination commit, causing all its
+descendants to be rebased. If descendants modified the same lines, this creates
+conflicts. Check with `jj log -r 'conflicts()'` after squashing. See
+[references/conflict-resolution.md](references/conflict-resolution.md).
+
+### Absorbing
+
+`jj absorb` auto-distributes changes from `@` into the correct mutable
+ancestors by blame — extremely powerful for fixup workflows.
+
+```bash
+jj absorb                               # auto-distribute @ into ancestors
+jj absorb --from <rev>                  # absorb from specific revision
+jj-hunk-tool absorb                     # hunk-aware absorb (whole-hunk routing)
+jj-hunk-tool absorb <id1> <id2>         # absorb specific hunks only
+jj-hunk-tool absorb --dry-run           # preview routing plan
+```
+
+Always review with `jj op show -p --no-pager` afterward.
+
+`jj-hunk-tool absorb` differs from `jj absorb`: it treats each hunk as an
+atomic unit and routes based on deleted/modified line blame. Pure insertions
+fall back to the most recent mutable ancestor that touched the same file. New
+files stay in `@`. Ambiguous hunks (lines from multiple ancestors) stay in `@`
+with candidates printed.
+
+## Editing diffs in place
+
+```bash
+jj-hunk-tool diffedit <id1> <id2> -r <rev>  # keep only selected hunks in <rev>
+```
+
+**Do not use bare `jj diffedit`.** It opens an interactive diff editor. Use
+`jj-hunk-tool diffedit` with explicit hunk IDs instead.
+
+## Restoring (undoing changes)
+
+```bash
+jj restore <paths...>                   # restore files in @ from parent
+jj restore --from <rev> <paths...>      # restore files from specific revision
+jj restore -c <rev>                     # undo all changes introduced by <rev>
+jj-hunk-tool restore <id1> <id2>        # undo specific hunks from @
+jj-hunk-tool restore <id> -c <rev>      # undo specific hunks from <rev>
+jj-hunk-tool restore <id> --from <rev> --into <rev>
+```
+
+## Rebasing and reordering
+
+```bash
+jj rebase -r <rev> -d <dest>            # move single commit onto dest
+jj rebase -s <rev> -d <dest>            # move commit + descendants
+jj rebase -b <rev> -d <dest>            # move whole branch
+jj rebase -r <rev> -A <after>           # insert after (reorder)
+jj rebase -r <rev> -B <before>          # insert before
+jj rebase -s @ -d main                  # rebase current stack onto main
+```
+
+Rebasing can create conflicts in the moved commits if the new base has diverged.
+Check `jj log -r 'conflicts()'` after rebasing. See
+[references/conflict-resolution.md](references/conflict-resolution.md).
+
+## Undoing operations
+
+```bash
+jj undo                                 # undo last operation
+jj op log --no-pager                    # view operation history
+jj op restore <op-id>                   # restore to any past state
+jj revert -r <rev> -d @                 # create reverse-patch of <rev> on @
+jj abandon <rev>                        # drop a revision, rebase descendants
+```
+
+## Conflicts
 
 ```bash
 jj log -r 'conflicts()'                # find commits with conflicts
 jj resolve --list                       # list conflicted files in @
-jj resolve                              # launch 3-way merge tool for @ conflicts
-jj resolve -r <rev>                     # resolve conflicts in specific revision
-jj resolve --tool :ours                 # pick "ours" side
-jj resolve --tool :theirs               # pick "theirs" side
-# Or: just edit the conflict markers directly in the file (recommended for agents)
+jj resolve --list -r <rev>             # list conflicted files in specific revision
 ```
 
 Conflicts are first-class data — a commit can contain conflicts and still be
@@ -231,9 +230,9 @@ rebased, squashed, or pushed. **For agents, the most reliable resolution method
 is reading the conflicted file and editing out the conflict markers directly.**
 jj's conflict markers differ from Git's — see
 [references/conflict-resolution.md](references/conflict-resolution.md) for the
-format, reading guide, and resolution strategies.
+format and resolution strategies.
 
-## Revset language
+## Revsets
 
 Revsets select sets of commits. Used with `-r` on most commands.
 
@@ -247,9 +246,7 @@ Revsets select sets of commits. Used with `-r` on most commands.
 | `root()` | Root commit |
 | `trunk()` | Head of default remote's default branch |
 | `<change_id>` | Commit by change ID (or unique prefix) |
-| `<commit_id>` | Commit by commit ID (or unique prefix) |
 | `<bookmark>` | Commit at bookmark |
-| `<bookmark>@<remote>` | Remote bookmark |
 
 ### Operators
 
@@ -261,24 +258,10 @@ Revsets select sets of commits. Used with `-r` on most commands.
 | `x::` | Descendants of x (inclusive) |
 | `x::y` | DAG range: ancestors of y that are descendants of x |
 | `x..y` | Set difference: ancestors of y minus ancestors of x |
-| `x..` | Everything not an ancestor of x |
-| `..x` | Ancestors of x (same as `::x` minus root) |
 | `~x` | Complement |
 | `x & y` | Intersection |
 | `x \| y` | Union |
 | `x ~ y` | Difference (x minus y) |
-
-### Useful functions
-
-```
-ancestors(x, depth)    descendants(x, depth)   parents(x)    children(x)
-heads(x)               roots(x)                connected(x)  fork_point(x)
-bookmarks(pattern)     tags(pattern)            trunk()
-mine()                 empty()                  merges()       conflicts()
-description(pattern)   author(pattern)          files(expr)
-mutable()              immutable()              present(x)
-latest(x, count)
-```
 
 ### Common patterns
 
@@ -289,161 +272,85 @@ ancestors(@, 5)        # last 5 ancestors
 mutable() & ancestors(@)  # mutable ancestors of @
 description("fixup")   # commits with "fixup" in description
 mine() & mutable()     # my mutable commits
+conflicts()            # all commits with conflicts
 ```
+
+For the complete function reference, string/date patterns, and workspace
+symbols, see [references/revset-reference.md](references/revset-reference.md).
 
 ## Workflows
 
-### Hunk-level split (selective split from @)
+### Stacking changes
 
 ```bash
-jj-hunk-tool hunks                         # list hunks with line numbers
-jj-hunk-tool split <id1> <id2> -m "msg"   # split selected hunks out
-# Remaining hunks stay in @
+jj commit -m "feature part 1"           # finalize @, create new empty @
+# ... work ...
+jj commit -m "feature part 2"
+jj log --no-pager -r 'trunk()..@'       # see the stack
 ```
-
-### Hunk-level split of historical revision
-
-```bash
-jj-hunk-tool hunks -r <rev>                # list with line numbers
-jj-hunk-tool split <id>:1-20 -r <rev> -m "first part"
-# Rest stays in <rev>; descendants auto-rebased
-jj log -r 'conflicts()'                    # check for conflicts!
-```
-
-**This operation rewrites `<rev>`, so all descendants are rebased.** If
-descendants touch the same code, conflicts will appear. Resolve them before
-continuing — see
-[references/conflict-resolution.md](references/conflict-resolution.md).
 
 ### Blame-guided fixup
 
 ```bash
-jj file annotate src/main.rs               # find which change touched each line
-jj-hunk-tool hunks                         # list current hunks
-jj-hunk-tool squash <id> --into <target> -m "fix bug"  # move fix directly
-# Or: split first, then squash
-jj-hunk-tool split <id> -m "fix bug"      # split the fix out
-jj squash --from @- --into <target>        # fold into the original change
+jj file annotate src/main.rs            # find which change touched each line
+jj-hunk-tool hunks                      # list current hunks
+jj-hunk-tool squash <id> --into <target> -m "fix bug"
 ```
 
-### Discard specific hunks from working copy
+### Discard specific hunks
 
 ```bash
-jj-hunk-tool hunks                         # list hunks
-jj-hunk-tool restore <id1> <id2>           # undo those hunks (default: -c @)
+jj-hunk-tool hunks                      # list hunks
+jj-hunk-tool restore <id1> <id2>        # undo those hunks
 ```
 
 ### Auto-fixup with absorb
 
 ```bash
 # Make fixes in working copy, then:
-jj absorb                                  # auto-distributes to correct ancestors
-jj op show -p --no-pager                   # review what happened
+jj absorb                               # auto-distribute to correct ancestors
+jj op show -p --no-pager                # review what happened
 
-# Hunk-aware absorb (routes by hunk overlap, not per-line blame)
-jj-hunk-tool absorb                        # auto-absorb all matched hunks
-jj-hunk-tool absorb --dry-run              # preview: which hunk → which ancestor
-jj-hunk-tool absorb <id>                   # absorb specific hunks only
-```
-
-`jj-hunk-tool absorb` differs from `jj absorb`: it treats each hunk as an
-atomic unit (whole hunk goes to one ancestor or stays), and routes hunks
-where deleted/modified lines are blamed to a single mutable ancestor. When
-no blamed lines match (e.g. pure insertions), it falls back to the most
-recent mutable ancestor that touched the same file. New files stay in `@`.
-Ambiguous hunks (lines from multiple ancestors) stay in `@` with the
-candidate list printed.
-
-### Stacking changes
-
-```bash
-jj describe -m "feature part 1"
-jj new                                     # start next change
-# ... work ...
-jj describe -m "feature part 2"
-jj new                                     # and so on
-jj log --no-pager -r 'trunk()..@'          # see the stack
+# Or hunk-aware absorb:
+jj-hunk-tool absorb --dry-run           # preview routing
+jj-hunk-tool absorb                     # execute
 ```
 
 ### Reorder commits in a stack
 
 ```bash
-jj rebase -r <rev> -A <after>             # move <rev> after <after>
-jj rebase -r <rev> -B <before>            # move <rev> before <before>
-```
-
-### Push a stack
-
-```bash
-jj bookmark set feature -r @
-jj git push -b feature
+jj rebase -r <rev> -A <after>           # move <rev> after <after>
+jj rebase -r <rev> -B <before>          # move <rev> before <before>
 ```
 
 ### Undo mistakes
 
 ```bash
-jj undo                                    # undo last operation
-jj op log --no-pager                       # find operation to restore
-jj op restore <op-id>                      # restore to any point
+jj undo                                 # undo last operation
+jj op log --no-pager                    # find operation to restore
+jj op restore <op-id>                   # restore to any point
 ```
-
-## Workspaces
-
-Workspaces let you have multiple working copies attached to the same repo. Each
-has its own `@`. All commits are shared — no merge-back needed.
-
-```bash
-jj workspace add ../feature-b        # create workspace (filesystem sibling)
-jj workspace list                     # list all workspaces
-jj workspace forget <name>           # unregister (delete files separately)
-jj workspace update-stale            # sync after external changes
-jj workspace rename <new-name>       # rename current workspace
-jj workspace root                    # print workspace root path
-```
-
-### Workspace notation in log and revsets
-
-When multiple workspaces exist, `jj log` shows each workspace's working copy:
-
-- `@` — current workspace's working copy
-- `feature-b@` — workspace "feature-b"'s working copy
-
-These are valid in revsets: `jj log --no-pager -r 'feature-b@::'`
-
-### Workflow: parallel work
-
-```bash
-jj new -m "feature work"
-jj workspace add ../test-ws          # new workspace, own working copy
-# In ../test-ws: run tests, experiment — commits visible in main workspace
-# Back in main workspace:
-jj log --no-pager                    # shows test-ws@ commit
-jj workspace forget test-ws          # done; rm -rf ../test-ws separately
-```
-
-For the full mental model (vs git worktrees), stale working copies, sparse
-checkouts, and colocated repo caveats, see
-[references/workspaces.md](references/workspaces.md).
 
 ## Common pitfalls for agents
 
 - **NEVER use `-i` / `--interactive` flags.** Commands like `jj split -i`,
   `jj squash -i`, `jj restore -i`, `jj-hunk-tool absorb -i`, etc. open an
   interactive diff editor or prompt that waits for terminal input. This will
-  hang indefinitely in a non-interactive agent context. Use `jj-hunk-tool`
-  with explicit hunk IDs instead of any `-i` flag.
+  hang indefinitely. Use `jj-hunk-tool` with explicit hunk IDs instead.
+- **NEVER use bare `jj split` (without file paths).** It opens a diff editor.
+  Use `jj split path/to/file` for file-level or `jj-hunk-tool split` for
+  hunk-level.
+- **NEVER use bare `jj diffedit`.** It opens a diff editor. Use
+  `jj-hunk-tool diffedit` with explicit hunk IDs.
 - Do NOT `jj abandon @` to "clean up" an empty working copy. It's normal.
 - **Always leave `@` empty when you're done working.** Use `jj commit -m "msg"`
   to finalize a change — NOT `jj describe`, which leaves your changes in `@`.
-  Leaving a non-empty `@` is the jj equivalent of a dirty working copy in Git.
 - Do NOT use `git` commands in a jj repo. Always use `jj`.
 - Always pass `--git --no-pager` when viewing diffs.
 - Always pass `--no-pager` to `jj log`, `jj op log`, `jj bookmark list`.
 - **Always pass `-m "message"` to `jj commit`, `jj describe`, `jj squash`,
   `jj split`, and any other command that sets a commit message** — unless the
-  user explicitly asks to write the message in their editor. Omitting `-m`
-  opens `$EDITOR`, which disrupts the user's workflow. This applies even when
-  using `--from`/`--into` with squash.
+  user explicitly asks to write the message in their editor.
 - `jj diff` with no `-r` shows `@` vs parent. Use `-r <rev>` for other revisions.
 - After `jj commit -m "msg"`, the described change is `@-` (the parent). `@` is
   the new empty working copy.
@@ -451,13 +358,15 @@ checkouts, and colocated repo caveats, see
   Use `mutable()` revset to find what you can edit.
 - `jj squash` without args squashes `@` into `@-`. With `--from`/`--into` you
   can squash between any two mutable commits.
-- After any history rewrite (`jj edit` + modify, `jj squash`, `jj rebase`,
-  `jj-hunk-tool split -r`), check `jj log -r 'conflicts()'` for conflicts.
-  Resolve them immediately before editing further descendants — cascading
-  conflicts are much harder to fix. See
+- After any history rewrite, check `jj log -r 'conflicts()'` for conflicts.
+  Resolve immediately — cascading conflicts are much harder to fix. See
   [references/conflict-resolution.md](references/conflict-resolution.md).
-- Workspaces can go stale when another workspace rewrites their `@`. Run
-  `jj workspace update-stale` to fix.
-- `jj workspace forget` only unregisters — delete the directory yourself.
-- In colocated repos, `jj workspace add` may lose git interop in the new
-  workspace.
+
+## Reference docs
+
+- [Revsets](references/revset-reference.md) — full function list, string/date patterns
+- [Conflict resolution](references/conflict-resolution.md) — marker format, reading guide, strategies
+- [Git interop](references/git-interop.md) — bookmarks, pushing, remotes, colocated repos
+- [Workspaces](references/workspaces.md) — multiple working copies, sparse checkouts
+- [Templates](references/template-reference.md) — custom log/show output
+- [Bisect](references/bisect.md) — binary search for regressions with `jj bisect run`

@@ -6,6 +6,22 @@ When `.git/` is sibling of `.jj/`, the repo is "colocated". Git and jj share
 the same commits. Imports/exports happen automatically. You can use `git log`
 to see the same history, but always use `jj` commands to make changes.
 
+## Bookmarks
+
+Bookmarks are named pointers to commits. They do NOT advance automatically on
+new commits (unlike Git branches). They DO follow when a commit is rewritten.
+Bookmarks map to Git branches for push/fetch.
+
+```bash
+jj bookmark create <name> -r <rev>      # create bookmark (default rev: @)
+jj bookmark set <name> -r <rev>         # move bookmark to revision
+jj bookmark delete <name>               # delete bookmark
+jj bookmark list --no-pager             # list local bookmarks
+jj bookmark list -a --no-pager          # list all including remote
+jj bookmark track <name>@<remote>       # start tracking remote bookmark
+jj bookmark untrack <name>@<remote>     # stop tracking
+```
+
 ## Remotes
 
 ```bash
@@ -17,16 +33,6 @@ jj git push -b <bookmark>              # push bookmark
 jj git push --all                       # push all bookmarks
 jj git push -c <rev>                    # auto-create bookmark and push
 jj git push --dry-run                   # preview
-```
-
-## Bookmark tracking
-
-Remote bookmarks are tracked/untracked. Tracked bookmarks sync local<->remote.
-
-```bash
-jj bookmark track <name>@<remote>       # start tracking
-jj bookmark untrack <name>@<remote>     # stop tracking
-jj bookmark list -a                     # show all including remote
 ```
 
 ## Push safety
