@@ -1,6 +1,7 @@
 use std::io::Write as _;
 use std::path::Path;
 use std::process::Command;
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
 use console::Style;
@@ -14,6 +15,9 @@ use git_surgeon::diff::DiffHunk;
 const PATCH_ENV_VAR: &str = "JJ_HUNK_TOOL_PATCH";
 const REVERSE_ENV_VAR: &str = "JJ_HUNK_TOOL_REVERSE";
 
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
+
 /// Display a hunk with syntax highlighting, diff colors, and absolute line numbers.
 /// Returns the formatted string (no ANSI codes if `color` is false).
 fn format_hunk_display(hunk: &DiffHunk, color: bool) -> String {
@@ -23,8 +27,8 @@ fn format_hunk_display(hunk: &DiffHunk, color: bool) -> String {
     let (old_start, new_start) = parse_header_ranges(&hunk.header);
 
     // Set up syntax highlighting
-    let ss = SyntaxSet::load_defaults_newlines();
-    let ts = ThemeSet::load_defaults();
+    let ss = &*SYNTAX_SET;
+    let ts = &*THEME_SET;
     let syntax = ss
         .find_syntax_by_extension(
             Path::new(&hunk.file)
