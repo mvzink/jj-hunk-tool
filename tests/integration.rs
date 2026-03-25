@@ -148,6 +148,27 @@ impl TestRepo {
         String::from_utf8(output.stdout).unwrap()
     }
 
+    /// Run tool from a subdirectory of the repo, expect success, return stdout.
+    fn tool_ok_in_subdir(&self, subdir: &str, args: &[&str]) -> String {
+        let dir = self.path().join(subdir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = Command::new(&self.binary)
+            .args(args)
+            .current_dir(&dir)
+            .env("JJ_CONFIG", "")
+            .env("EDITOR", "true")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "tool {:?} (in {subdir}) failed: {}{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
     /// Extract hunk IDs from `hunks` output. Returns vec of (id, line_text).
     /// Header lines look like "abc1234 file.txt (+N -M)"; numbered lines look like "1:...".
     fn get_hunk_ids(&self, extra_args: &[&str]) -> Vec<(String, String)> {
@@ -2118,5 +2139,25 @@ fn absorb_interactive_absorb_file() {
     assert!(
         wc_diff.contains("bbb_new"),
         "b.txt hunk should be skipped, got: {wc_diff}"
+    );
+}
+
+#[test]
+fn absorb_works_from_subdirectory() {
+    let repo = TestRepo::new();
+    // Create file in a subdirectory
+    repo.commit_file("sub/a.txt", "line1\nline2\nline3\n");
+    repo.write_file("sub/a.txt", "line1\nmodified_by_x\nline3\n");
+    repo.jj(&["commit", "-m", "change by X"]);
+    repo.write_file("sub/a.txt", "line1\nmodified_again\nline3\n");
+
+    // Run absorb from the subdirectory
+    repo.tool_ok_in_subdir("sub", &["absorb"]);
+
+    // Change should be absorbed
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.trim().is_empty(),
+        "absorb from subdir should work, got: {wc_diff}"
     );
 }

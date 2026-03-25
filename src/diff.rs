@@ -5,9 +5,23 @@ use std::process::Command;
 pub use git_surgeon::diff::{check_supported, parse_diff};
 pub use git_surgeon::hunk_id::assign_ids;
 
+/// Get the jj workspace root directory.
+pub fn get_repo_root() -> Result<std::path::PathBuf> {
+    let output = Command::new("jj")
+        .args(["root", "--no-pager"])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("jj root failed: {stderr}");
+    }
+    let root = String::from_utf8(output.stdout)?.trim().to_string();
+    Ok(std::path::PathBuf::from(root))
+}
+
 /// Get per-line annotation (change IDs) for a file at a given revision.
+/// File path must be repo-root-relative.
 /// Returns one change ID per line of the file.
-pub fn get_jj_annotations(revision: &str, file: &str) -> Result<Vec<String>> {
+pub fn get_jj_annotations(revision: &str, file: &str, repo_root: &std::path::Path) -> Result<Vec<String>> {
     let output = Command::new("jj")
         .args([
             "file",
@@ -19,6 +33,7 @@ pub fn get_jj_annotations(revision: &str, file: &str) -> Result<Vec<String>> {
             "commit.change_id().shortest(8) ++ \"\\n\"",
             file,
         ])
+        .current_dir(repo_root)
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -85,7 +100,8 @@ pub fn get_change_descriptions(
 }
 
 /// Get mutable ancestors that touched a specific file, ordered most-recent-first.
-pub fn get_ancestors_touching_file(source_rev: &str, file: &str) -> Result<Vec<String>> {
+/// File path must be repo-root-relative.
+pub fn get_ancestors_touching_file(source_rev: &str, file: &str, repo_root: &std::path::Path) -> Result<Vec<String>> {
     let revset = format!("(immutable_heads()..({source_rev}-)) & files(\"{file}\")");
     let output = Command::new("jj")
         .args([
@@ -97,6 +113,7 @@ pub fn get_ancestors_touching_file(source_rev: &str, file: &str) -> Result<Vec<S
             "-T",
             "change_id.shortest(8) ++ \"\\n\"",
         ])
+        .current_dir(repo_root)
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

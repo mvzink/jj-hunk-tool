@@ -342,6 +342,7 @@ pub fn absorb_hunks(
 
     // 2. Pre-fetch annotations and file-ancestor data in parallel
     let parent_rev = format!("{source}-");
+    let repo_root = diff::get_repo_root()?;
 
     let unique_files: Vec<String> = {
         let mut files = std::collections::HashSet::new();
@@ -358,14 +359,16 @@ pub fn absorb_hunks(
             .iter()
             .map(|file| {
                 let pr = &parent_rev;
-                s.spawn(move || (file.clone(), diff::get_jj_annotations(pr, file)))
+                let root = &repo_root;
+                s.spawn(move || (file.clone(), diff::get_jj_annotations(pr, file, root)))
             })
             .collect();
 
         let fa_handles: Vec<_> = unique_files
             .iter()
             .map(|file| {
-                s.spawn(move || (file.clone(), diff::get_ancestors_touching_file(source, file)))
+                let root = &repo_root;
+                s.spawn(move || (file.clone(), diff::get_ancestors_touching_file(source, file, root)))
             })
             .collect();
 
