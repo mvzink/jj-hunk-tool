@@ -123,6 +123,21 @@ pub fn get_ancestors_touching_file(source_rev: &str, file: &str, repo_root: &std
     Ok(stdout.lines().map(|l| l.to_string()).collect())
 }
 
+/// Get the current jj operation ID.
+pub fn get_current_op_id() -> Result<String> {
+    let output = Command::new("jj")
+        .args([
+            "op", "log", "--no-pager", "--no-graph", "--limit", "1",
+            "-T", "self.id().short(16)",
+        ])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("jj op log failed: {stderr}");
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
 /// Run `jj diff --git` for the given revision and return the raw output.
 pub fn get_jj_diff(revision: &Option<String>) -> Result<String> {
     let mut cmd = Command::new("jj");

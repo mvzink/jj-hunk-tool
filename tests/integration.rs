@@ -2161,3 +2161,53 @@ fn absorb_works_from_subdirectory() {
         "absorb from subdir should work, got: {wc_diff}"
     );
 }
+
+#[test]
+fn absorb_prints_undo_operation_id() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "line1\nline2\nline3\n");
+    repo.write_file("a.txt", "line1\nmodified_by_x\nline3\n");
+    repo.jj(&["commit", "-m", "change by X"]);
+    repo.write_file("a.txt", "line1\nmodified_again\nline3\n");
+
+    let output = repo.tool_ok(&["absorb"]);
+
+    // Should contain an undo hint with an operation ID
+    assert!(
+        output.contains("To undo, run: jj op restore "),
+        "absorb should print undo operation ID, got: {output}"
+    );
+
+    // Extract the op ID and verify it works
+    let op_line = output.lines().find(|l| l.contains("jj op restore")).unwrap();
+    let op_id = op_line.trim().strip_prefix("To undo, run: jj op restore ").unwrap();
+    assert!(
+        !op_id.is_empty(),
+        "operation ID should not be empty"
+    );
+
+    // Verify we can actually restore to that operation
+    repo.jj(&["op", "restore", op_id]);
+    // After restoring, the working copy should have the diff again
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.contains("modified_again"),
+        "after op restore, working copy should have the change back, got: {wc_diff}"
+    );
+}
+
+#[test]
+fn absorb_dry_run_does_not_print_undo() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "line1\nline2\nline3\n");
+    repo.write_file("a.txt", "line1\nmodified_by_x\nline3\n");
+    repo.jj(&["commit", "-m", "change by X"]);
+    repo.write_file("a.txt", "line1\nmodified_again\nline3\n");
+
+    let output = repo.tool_ok(&["absorb", "--dry-run"]);
+
+    assert!(
+        !output.contains("jj op restore"),
+        "dry-run absorb should not print undo hint, got: {output}"
+    );
+}

@@ -808,6 +808,9 @@ pub fn absorb_hunks(
         return Ok(());
     }
 
+    // Record the current operation ID for undo hint
+    let pre_op_id = diff::get_current_op_id()?;
+
     // 5. Execute: sequential squash per target, re-identifying by fingerprint
     // Group absorbed hunks by target
     let mut target_groups: std::collections::HashMap<String, Vec<HunkFingerprint>> =
@@ -848,6 +851,8 @@ pub fn absorb_hunks(
         let args: Vec<&str> = vec!["squash", "--from", source, "--into", target];
         run_jj_with_tool(&args, &patch_content, false)?;
     }
+
+    println!("To undo, run: jj op restore {pre_op_id}");
 
     Ok(())
 }
