@@ -337,8 +337,15 @@ pub fn absorb_hunks(
 ) -> Result<()> {
     use crate::diff;
 
-    // 1. Get mutable ancestors
-    let ancestors = diff::get_mutable_ancestors(source)?;
+    // 1. Get mutable ancestors and repo root in parallel
+    let (ancestors_result, repo_root_result) = std::thread::scope(|s| {
+        let anc = s.spawn(|| diff::get_mutable_ancestors_with_descriptions(source));
+        let root = s.spawn(|| diff::get_repo_root());
+        (anc.join().unwrap(), root.join().unwrap())
+    });
+    let (ancestors, ancestor_descs) = ancestors_result?;
+    let repo_root = repo_root_result?;
+
     if ancestors.is_empty() {
         println!("Nothing to absorb: no mutable ancestors.");
         return Ok(());
@@ -346,7 +353,6 @@ pub fn absorb_hunks(
 
     // 2. Pre-fetch annotations and file-ancestor data in parallel
     let parent_rev = format!("{source}-");
-    let repo_root = diff::get_repo_root()?;
 
     let unique_files: Vec<String> = {
         let mut files = std::collections::HashSet::new();
@@ -406,10 +412,6 @@ pub fn absorb_hunks(
 
         (annotations, file_ancestors)
     });
-
-    // Pre-fetch change descriptions for all ancestors in one batch
-    let ancestor_ids: Vec<String> = ancestors.iter().cloned().collect();
-    let ancestor_descs = diff::get_change_descriptions(&ancestor_ids).unwrap_or_default();
 
     // 3. Route each hunk
     let mut routings: Vec<(HunkRouting, HunkFingerprint)> = Vec::new();

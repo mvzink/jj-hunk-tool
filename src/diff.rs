@@ -43,29 +43,6 @@ pub fn get_jj_annotations(revision: &str, file: &str, repo_root: &std::path::Pat
     Ok(stdout.lines().map(|l| l.to_string()).collect())
 }
 
-/// Get the set of mutable ancestor change IDs between immutable_heads() and the
-/// given revision's parents.
-pub fn get_mutable_ancestors(source_rev: &str) -> Result<HashSet<String>> {
-    let revset = format!("immutable_heads()..({source_rev}-)");
-    let output = Command::new("jj")
-        .args([
-            "log",
-            "--no-pager",
-            "--no-graph",
-            "-r",
-            &revset,
-            "-T",
-            "change_id.shortest(8) ++ \"\\n\"",
-        ])
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("jj log failed: {stderr}");
-    }
-    let stdout = String::from_utf8(output.stdout)?;
-    Ok(stdout.lines().map(|l| l.to_string()).collect())
-}
-
 /// Get mutable ancestors and their descriptions in a single jj call.
 /// Returns (set of change IDs, map of change ID → first line of description).
 pub fn get_mutable_ancestors_with_descriptions(
@@ -98,39 +75,6 @@ pub fn get_mutable_ancestors_with_descriptions(
         }
     }
     Ok((ids, descs))
-}
-
-/// Get descriptions (first line) for multiple change IDs in a single jj call.
-pub fn get_change_descriptions(
-    change_ids: &[String],
-) -> Result<std::collections::HashMap<String, String>> {
-    use std::collections::HashMap;
-    if change_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let revset = change_ids.join(" | ");
-    let output = Command::new("jj")
-        .args([
-            "log",
-            "--no-pager",
-            "--no-graph",
-            "-r",
-            &revset,
-            "-T",
-            r#"change_id.shortest(8) ++ "\t" ++ description.first_line() ++ "\n""#,
-        ])
-        .output()?;
-    if !output.status.success() {
-        return Ok(HashMap::new());
-    }
-    let stdout = String::from_utf8(output.stdout)?;
-    Ok(stdout
-        .lines()
-        .filter_map(|l| {
-            let (id, desc) = l.split_once('\t')?;
-            Some((id.to_string(), desc.to_string()))
-        })
-        .collect())
 }
 
 /// Get mutable ancestors that touched a specific file, ordered most-recent-first.
