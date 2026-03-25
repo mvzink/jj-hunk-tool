@@ -2039,3 +2039,84 @@ fn squash_reports_conflicts_in_descendants() {
         "jj-hunk-tool squash should report conflicts in descendants.\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+#[test]
+fn absorb_interactive_single_keypress() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "line1\nline2\nline3\n");
+    repo.write_file("a.txt", "line1\nmodified_by_x\nline3\n");
+    repo.jj(&["commit", "-m", "change by X"]);
+    repo.write_file("a.txt", "line1\nmodified_again\nline3\n");
+
+    // Send just "a" without newline — single keypress should suffice
+    let output = repo.tool_with_stdin(&["absorb", "-i"], "a");
+
+    assert!(output.contains("a.txt"), "should show file name: {output}");
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.trim().is_empty(),
+        "single keypress 'a' should absorb the hunk, got: {wc_diff}"
+    );
+}
+
+#[test]
+fn absorb_interactive_skip_file() {
+    let repo = TestRepo::new();
+    // Two hunks in a.txt, one in b.txt
+    repo.commit_file("a.txt", "aaa1\npadding\npadding\npadding\naaa2\n");
+    repo.commit_file("b.txt", "bbb\n");
+    repo.write_file("a.txt", "aaa1_by_x\npadding\npadding\npadding\naaa2_by_x\n");
+    repo.write_file("b.txt", "bbb_by_x\n");
+    repo.jj(&["commit", "-m", "change all"]);
+    repo.write_file("a.txt", "aaa1_new\npadding\npadding\npadding\naaa2_new\n");
+    repo.write_file("b.txt", "bbb_new\n");
+
+    // [S]kip file skips rest of a.txt, then [a]bsorb on b.txt
+    let output = repo.tool_with_stdin(&["absorb", "-i"], "Sa");
+
+    // a.txt hunks should be skipped, b.txt should be absorbed
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        wc_diff.contains("aaa1_new") || wc_diff.contains("aaa2_new"),
+        "a.txt hunks should be skipped by [S]kip file, got: {wc_diff}"
+    );
+    assert!(
+        !wc_diff.contains("bbb_new"),
+        "b.txt hunk should be absorbed, got: {wc_diff}"
+    );
+    assert!(
+        output.contains("[S]kip file"),
+        "prompt should show [S]kip file option, got: {output}"
+    );
+    assert!(
+        output.contains("[A]bsorb file"),
+        "prompt should show [A]bsorb file option, got: {output}"
+    );
+}
+
+#[test]
+fn absorb_interactive_absorb_file() {
+    let repo = TestRepo::new();
+    // Two hunks in a.txt, one in b.txt
+    repo.commit_file("a.txt", "aaa1\npadding\npadding\npadding\naaa2\n");
+    repo.commit_file("b.txt", "bbb\n");
+    repo.write_file("a.txt", "aaa1_by_x\npadding\npadding\npadding\naaa2_by_x\n");
+    repo.write_file("b.txt", "bbb_by_x\n");
+    repo.jj(&["commit", "-m", "change all"]);
+    repo.write_file("a.txt", "aaa1_new\npadding\npadding\npadding\naaa2_new\n");
+    repo.write_file("b.txt", "bbb_new\n");
+
+    // [A]bsorb file on a.txt (absorbs both a.txt hunks), then [s]kip b.txt
+    let _output = repo.tool_with_stdin(&["absorb", "-i"], "As");
+
+    // a.txt hunks should be absorbed, b.txt should be skipped
+    let wc_diff = repo.jj_diff("@");
+    assert!(
+        !wc_diff.contains("aaa1_new") && !wc_diff.contains("aaa2_new"),
+        "a.txt hunks should be absorbed by [A]bsorb file, got: {wc_diff}"
+    );
+    assert!(
+        wc_diff.contains("bbb_new"),
+        "b.txt hunk should be skipped, got: {wc_diff}"
+    );
+}

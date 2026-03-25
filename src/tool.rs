@@ -373,7 +373,13 @@ pub fn absorb_hunks(
             .into_iter()
             .filter_map(|h| {
                 let (f, r) = h.join().ok()?;
-                r.ok().map(|a| (f, a))
+                match r {
+                    Ok(a) => Some((f, a)),
+                    Err(e) => {
+                        eprintln!("warning: annotation failed for {f}: {e}");
+                        None
+                    }
+                }
             })
             .collect();
 
@@ -381,7 +387,13 @@ pub fn absorb_hunks(
             .into_iter()
             .filter_map(|h| {
                 let (f, r) = h.join().ok()?;
-                r.ok().map(|a| (f, a))
+                match r {
+                    Ok(a) => Some((f, a)),
+                    Err(e) => {
+                        eprintln!("warning: file ancestor lookup failed for {f}: {e}");
+                        None
+                    }
+                }
             })
             .collect();
 
@@ -504,16 +516,52 @@ pub fn absorb_hunks(
     // 3b. Interactive review: let user accept/skip/retarget each hunk
     if interactive {
         let ancestor_list: Vec<String> = ancestors.iter().cloned().collect();
-        let stdin = std::io::stdin();
         let mut quit = false;
+        let mut skip_file: Option<String> = None;
+        let mut absorb_file: Option<String> = None;
+
+        // Read single chars: use console::Term for TTY, raw bytes for piped stdin
+        let term = console::Term::stdout();
+        let is_tty = term.is_term();
+
+        let read_char = |term: &console::Term, is_tty: bool| -> Result<char> {
+            if is_tty {
+                Ok(term.read_char()?)
+            } else {
+                use std::io::Read;
+                let mut buf = [0u8; 1];
+                let n = std::io::stdin().lock().read(&mut buf)?;
+                if n == 0 {
+                    bail!("unexpected end of input");
+                }
+                Ok(buf[0] as char)
+            }
+        };
 
         for (routing, _fp) in routings.iter_mut() {
             if quit {
-                // After quit, skip remaining hunks (leave targets as-is won't matter,
-                // but we need to clear target so they don't get absorbed)
                 routing.target = None;
                 routing.reason = "skipped (quit)";
                 continue;
+            }
+
+            if let Some(ref sf) = skip_file {
+                if routing.file == *sf {
+                    routing.target = None;
+                    routing.reason = "skipped (file)";
+                    continue;
+                } else {
+                    skip_file = None;
+                }
+            }
+
+            if let Some(ref af) = absorb_file {
+                if routing.file == *af {
+                    // Auto-absorb: keep existing target (if any)
+                    continue;
+                } else {
+                    absorb_file = None;
+                }
             }
 
             // Find the original hunk to display its content
@@ -523,7 +571,6 @@ pub fn absorb_hunks(
                 .map(|(_, h)| *h);
 
             // Display hunk with syntax highlighting and absolute line numbers
-            let is_tty = console::Term::stdout().is_term();
             let header_style = if is_tty { Style::new().bold() } else { Style::new() };
             println!(
                 "\n{} {} (+{} -{})",
@@ -563,28 +610,52 @@ pub fn absorb_hunks(
             };
             println!("{target_desc}");
 
-            // Prompt loop
+            // Prompt loop — single keypress, no Enter needed
             loop {
-                print!("[a]bsorb / [s]kip / [t]arget / [q]uit: ");
+                print!("[a]bsorb / [A]bsorb file / [s]kip / [S]kip file / [t]arget / [q]uit: ");
                 std::io::Write::flush(&mut std::io::stdout())?;
-                let mut input = String::new();
-                stdin.read_line(&mut input)?;
-                let action = input.trim().to_lowercase();
+                let ch = match read_char(&term, is_tty) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        // EOF — treat as quit
+                        quit = true;
+                        routing.target = None;
+                        routing.reason = "skipped (quit)";
+                        break;
+                    }
+                };
+                if is_tty {
+                    println!(); // newline after the keypress echo
+                }
 
-                match action.as_str() {
-                    "a" | "absorb" => {
+                match ch {
+                    'a' => {
                         if routing.target.is_none() {
                             println!("No target set. Use [t] to pick a target first.");
                             continue;
                         }
                         break;
                     }
-                    "s" | "skip" => {
+                    'A' => {
+                        if routing.target.is_none() {
+                            println!("No target set. Use [t] to pick a target first.");
+                            continue;
+                        }
+                        absorb_file = Some(routing.file.clone());
+                        break;
+                    }
+                    's' => {
                         routing.target = None;
                         routing.reason = "skipped";
                         break;
                     }
-                    "t" | "target" => {
+                    'S' => {
+                        skip_file = Some(routing.file.clone());
+                        routing.target = None;
+                        routing.reason = "skipped (file)";
+                        break;
+                    }
+                    't' | 'T' => {
                         // Show numbered list of ancestors
                         println!("Select target:");
                         for (i, cid) in ancestor_list.iter().enumerate() {
@@ -597,8 +668,9 @@ pub fn absorb_hunks(
                         }
                         print!("Enter number: ");
                         std::io::Write::flush(&mut std::io::stdout())?;
+                        // Target selection still uses line input for the number
                         let mut num_input = String::new();
-                        stdin.read_line(&mut num_input)?;
+                        std::io::stdin().read_line(&mut num_input)?;
                         if let Ok(n) = num_input.trim().parse::<usize>() {
                             if n >= 1 && n <= ancestor_list.len() {
                                 routing.target = Some(ancestor_list[n - 1].clone());
@@ -612,14 +684,15 @@ pub fn absorb_hunks(
                         println!("Invalid selection.");
                         continue;
                     }
-                    "q" | "quit" => {
+                    'q' | 'Q' => {
                         quit = true;
                         routing.target = None;
                         routing.reason = "skipped (quit)";
                         break;
                     }
+                    '\n' | '\r' | ' ' => continue,
                     _ => {
-                        println!("Unknown action. Use a/s/t/q.");
+                        println!("Unknown action. Use a/A/s/S/t/q.");
                         continue;
                     }
                 }
