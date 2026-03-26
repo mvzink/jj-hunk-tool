@@ -2211,3 +2211,24 @@ fn absorb_dry_run_does_not_print_undo() {
         "dry-run absorb should not print undo hint, got: {output}"
     );
 }
+
+#[test]
+fn absorb_debug_prints_annotation_details() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "line1\nline2\nline3\n");
+    repo.write_file("a.txt", "line1\nmodified_by_x\nline3\n");
+    repo.jj(&["commit", "-m", "change by X"]);
+    repo.write_file("a.txt", "line1\nmodified_again\nline3\n");
+
+    let (_stdout, stderr) = repo.tool_output(&["absorb", "--dry-run", "--debug"]);
+
+    // Debug output should contain annotation details
+    assert!(
+        stderr.contains("debug: annotating"),
+        "debug flag should print annotation info, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("debug: mutable ancestors"),
+        "debug flag should print ancestor info, stderr: {stderr}"
+    );
+}

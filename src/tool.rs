@@ -334,6 +334,7 @@ pub fn absorb_hunks(
     source: &str,
     dry_run: bool,
     interactive: bool,
+    debug: bool,
 ) -> Result<()> {
     use crate::diff;
 
@@ -345,6 +346,10 @@ pub fn absorb_hunks(
     });
     let (ancestors, ancestor_descs) = ancestors_result?;
     let repo_root = repo_root_result?;
+
+    if debug {
+        eprintln!("debug: mutable ancestors: {:?}", ancestors);
+    }
 
     if ancestors.is_empty() {
         println!("Nothing to absorb: no mutable ancestors.");
@@ -370,6 +375,9 @@ pub fn absorb_hunks(
             .map(|file| {
                 let pr = &parent_rev;
                 let root = &repo_root;
+                if debug {
+                    eprintln!("debug: annotating {file} at revision {pr}");
+                }
                 s.spawn(move || (file.clone(), diff::get_jj_annotations(pr, file, root)))
             })
             .collect();
@@ -387,9 +395,20 @@ pub fn absorb_hunks(
             .filter_map(|h| {
                 let (f, r) = h.join().ok()?;
                 match r {
-                    Ok(a) => Some((f, a)),
+                    Ok(a) => {
+                        if debug {
+                            eprintln!("debug: annotation for {f}: {} lines", a.len());
+                            for (i, change_id) in a.iter().enumerate() {
+                                eprintln!("debug:   line {}: {change_id}", i + 1);
+                            }
+                        }
+                        Some((f, a))
+                    }
                     Err(e) => {
                         eprintln!("warning: annotation failed for {f}: {e}");
+                        if debug {
+                            eprintln!("debug: annotation error detail for {f}: {e:?}");
+                        }
                         None
                     }
                 }
@@ -401,9 +420,17 @@ pub fn absorb_hunks(
             .filter_map(|h| {
                 let (f, r) = h.join().ok()?;
                 match r {
-                    Ok(a) => Some((f, a)),
+                    Ok(a) => {
+                        if debug {
+                            eprintln!("debug: file ancestors for {f}: {a:?}");
+                        }
+                        Some((f, a))
+                    }
                     Err(e) => {
                         eprintln!("warning: file ancestor lookup failed for {f}: {e}");
+                        if debug {
+                            eprintln!("debug: file ancestor error detail for {f}: {e:?}");
+                        }
                         None
                     }
                 }
@@ -442,6 +469,13 @@ pub fn absorb_hunks(
         let annotations = match annotations_cache.get(&hunk.file) {
             Some(ann) => ann,
             None => {
+                if debug {
+                    eprintln!(
+                        "debug: hunk {id} ({file}): no annotations in cache \
+                         (annotation command likely failed, see warning above)",
+                        file = hunk.file,
+                    );
+                }
                 routings.push((
                     HunkRouting {
                         hunk_id: id.clone(),
@@ -466,15 +500,38 @@ pub fn absorb_hunks(
             std::collections::HashMap::new();
 
         if let Some((old_start, _old_count)) = old_range {
+            if debug {
+                eprintln!(
+                    "debug: hunk {id} ({file}): old_range starts at line {old_start}, \
+                     annotation has {} lines",
+                    annotations.len(),
+                    file = hunk.file,
+                );
+            }
             let has_deletions = hunk.lines.iter().any(|l| l.starts_with('-'));
             if has_deletions {
                 let mut old_line = old_start; // 1-based
                 for line in &hunk.lines {
                     if line.starts_with('-') {
-                        if let Some(change_id) = annotations.get(old_line.saturating_sub(1)) {
-                            if ancestors.contains(change_id) {
+                        let ann_idx = old_line.saturating_sub(1);
+                        if let Some(change_id) = annotations.get(ann_idx) {
+                            let is_mutable = ancestors.contains(change_id);
+                            if debug {
+                                eprintln!(
+                                    "debug: hunk {id}: deleted line {old_line} -> \
+                                     change {change_id} (mutable: {is_mutable})"
+                                );
+                            }
+                            if is_mutable {
                                 *ancestor_hits.entry(change_id.clone()).or_insert(0) += 1;
                             }
+                        } else if debug {
+                            eprintln!(
+                                "debug: hunk {id}: deleted line {old_line} -> \
+                                 annotation index {ann_idx} out of bounds \
+                                 (annotations len: {})",
+                                annotations.len()
+                            );
                         }
                         old_line += 1;
                     } else if line.starts_with('+') {
@@ -484,7 +541,19 @@ pub fn absorb_hunks(
                         old_line += 1;
                     }
                 }
+            } else if debug {
+                eprintln!("debug: hunk {id}: no deletions, skipping line-level annotation");
             }
+        } else if debug {
+            eprintln!(
+                "debug: hunk {id} ({file}): failed to parse old_range from header: {:?}",
+                hunk.header,
+                file = hunk.file,
+            );
+        }
+
+        if debug {
+            eprintln!("debug: hunk {id}: ancestor_hits = {ancestor_hits:?}");
         }
 
         let (target, candidates, reason) = if ancestor_hits.len() == 1 {
