@@ -2213,22 +2213,59 @@ fn absorb_dry_run_does_not_print_undo() {
 }
 
 #[test]
-fn absorb_debug_prints_annotation_details() {
+fn debug_flag_hunks_prints_diff_command() {
+    let repo = TestRepo::new();
+    repo.write_file("a.txt", "hello\n");
+
+    let (_stdout, stderr) = repo.tool_output(&["--debug", "hunks"]);
+
+    assert!(
+        stderr.contains("debug: running jj diff"),
+        "--debug should print the jj diff command, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("debug: parsed"),
+        "--debug should print parsed hunk count, stderr: {stderr}"
+    );
+}
+
+#[test]
+fn debug_flag_split_prints_jj_command() {
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", "line1\nline2\nline3\n");
+    repo.write_file("a.txt", "ADDED\nline1\nline2\nline3\nADDED2\n");
+
+    let stdout = repo.tool_ok(&["hunks"]);
+    let hunk_id = stdout.lines().next().unwrap().split_whitespace().next().unwrap();
+
+    let (_stdout, stderr) = repo.tool_output(&["--debug", "split", hunk_id, "-m", "first"]);
+
+    assert!(
+        stderr.contains("debug: running jj"),
+        "--debug should print the jj command, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("debug: patch content"),
+        "--debug should print patch info, stderr: {stderr}"
+    );
+}
+
+#[test]
+fn debug_flag_absorb_prints_annotation_details() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "line1\nline2\nline3\n");
     repo.write_file("a.txt", "line1\nmodified_by_x\nline3\n");
     repo.jj(&["commit", "-m", "change by X"]);
     repo.write_file("a.txt", "line1\nmodified_again\nline3\n");
 
-    let (_stdout, stderr) = repo.tool_output(&["absorb", "--dry-run", "--debug"]);
+    let (_stdout, stderr) = repo.tool_output(&["--debug", "absorb", "--dry-run"]);
 
-    // Debug output should contain annotation details
     assert!(
         stderr.contains("debug: annotating"),
-        "debug flag should print annotation info, stderr: {stderr}"
+        "--debug should print annotation info, stderr: {stderr}"
     );
     assert!(
         stderr.contains("debug: mutable ancestors"),
-        "debug flag should print ancestor info, stderr: {stderr}"
+        "--debug should print ancestor info, stderr: {stderr}"
     );
 }

@@ -186,7 +186,7 @@ pub fn build_combined_patch(specs: &[HunkSpec<'_>], reverse: bool) -> Result<Str
 }
 
 /// Run a jj command with our tool configured via inline --config flags.
-fn run_jj_with_tool(jj_args: &[&str], patch_content: &str, reverse: bool) -> Result<()> {
+fn run_jj_with_tool(jj_args: &[&str], patch_content: &str, reverse: bool, debug: bool) -> Result<()> {
     let exe = std::env::current_exe().context("finding own executable")?;
 
     let mut patch_file = tempfile::NamedTempFile::new().context("creating temp patch file")?;
@@ -208,6 +208,13 @@ fn run_jj_with_tool(jj_args: &[&str], patch_content: &str, reverse: bool) -> Res
     cmd.env(PATCH_ENV_VAR, patch_file.path());
     if reverse {
         cmd.env(REVERSE_ENV_VAR, "1");
+    }
+
+    if debug {
+        eprintln!("debug: running jj {}", jj_args.join(" "));
+        eprintln!("debug: patch content ({} bytes):\n{patch_content}", patch_content.len());
+        eprintln!("debug: reverse={reverse}");
+        eprintln!("debug: patch file: {}", patch_file.path().display());
     }
 
     let output = cmd.output().context("running jj")?;
@@ -235,6 +242,7 @@ pub fn split_hunks(
     message: Option<&str>,
     parallel: bool,
     extra_args: &[&str],
+    debug: bool,
 ) -> Result<()> {
     let patch_content = build_combined_patch(specs, false)?;
     if patch_content.is_empty() {
@@ -255,42 +263,42 @@ pub fn split_hunks(
     }
     args.extend_from_slice(extra_args);
 
-    run_jj_with_tool(&args, &patch_content, false)?;
+    run_jj_with_tool(&args, &patch_content, false, debug)?;
     Ok(())
 }
 
 /// Squash selected hunks from source into destination using jj squash --tool.
-pub fn squash_hunks(specs: &[HunkSpec<'_>], extra_args: &[&str]) -> Result<()> {
+pub fn squash_hunks(specs: &[HunkSpec<'_>], extra_args: &[&str], debug: bool) -> Result<()> {
     let patch_content = build_combined_patch(specs, false)?;
     if patch_content.is_empty() {
         bail!("no hunks selected");
     }
     let mut args = vec!["squash"];
     args.extend_from_slice(extra_args);
-    run_jj_with_tool(&args, &patch_content, false)
+    run_jj_with_tool(&args, &patch_content, false, debug)
 }
 
 /// Rewrite a revision in-place, keeping only the selected hunks.
-pub fn diffedit_hunks(specs: &[HunkSpec<'_>], jj_extra_args: &[&str]) -> Result<()> {
+pub fn diffedit_hunks(specs: &[HunkSpec<'_>], jj_extra_args: &[&str], debug: bool) -> Result<()> {
     let patch_content = build_combined_patch(specs, false)?;
     if patch_content.is_empty() {
         bail!("no hunks selected");
     }
     let mut args = vec!["diffedit"];
     args.extend_from_slice(jj_extra_args);
-    run_jj_with_tool(&args, &patch_content, false)
+    run_jj_with_tool(&args, &patch_content, false, debug)
 }
 
 /// Restore (undo) selected hunks. The caller provides the jj-specific args
 /// (e.g. ["--changes-in", "@"] or ["--from", "x", "--into", "y"]).
-pub fn restore_hunks(specs: &[HunkSpec<'_>], jj_extra_args: &[&str]) -> Result<()> {
+pub fn restore_hunks(specs: &[HunkSpec<'_>], jj_extra_args: &[&str], debug: bool) -> Result<()> {
     let patch_content = build_combined_patch(specs, false)?;
     if patch_content.is_empty() {
         bail!("no hunks selected");
     }
     let mut args = vec!["restore"];
     args.extend_from_slice(jj_extra_args);
-    run_jj_with_tool(&args, &patch_content, true)
+    run_jj_with_tool(&args, &patch_content, true, debug)
 }
 
 /// A hunk fingerprint for stable matching across re-computations.
@@ -901,7 +909,7 @@ pub fn absorb_hunks(
 
     for (target, fingerprints) in &target_groups {
         // Re-get current diff (it changes after each squash)
-        let raw = diff::get_jj_diff(&Some(source.to_string()))?;
+        let raw = diff::get_jj_diff(&Some(source.to_string()), debug)?;
         let hunks = crate::diff::parse_diff(&raw);
         let identified = crate::diff::assign_ids(&hunks);
 
@@ -915,6 +923,9 @@ pub fn absorb_hunks(
         }
 
         if specs.is_empty() {
+            if debug {
+                eprintln!("debug: no hunks matched fingerprints for target {target}, skipping");
+            }
             continue;
         }
 
@@ -923,8 +934,12 @@ pub fn absorb_hunks(
             continue;
         }
 
+        if debug {
+            eprintln!("debug: squashing {} hunks into {target}", specs.len());
+        }
+
         let args: Vec<&str> = vec!["squash", "--from", source, "--into", target];
-        run_jj_with_tool(&args, &patch_content, false)?;
+        run_jj_with_tool(&args, &patch_content, false, debug)?;
     }
 
     println!("To undo, run: jj op restore {pre_op_id}");

@@ -117,28 +117,46 @@ pub fn get_current_op_id() -> Result<String> {
 }
 
 /// Run `jj diff --git` for the given revision and return the raw output.
-pub fn get_jj_diff(revision: &Option<String>) -> Result<String> {
+pub fn get_jj_diff(revision: &Option<String>, debug: bool) -> Result<String> {
     let mut cmd = Command::new("jj");
     cmd.args(["diff", "--git", "--no-pager"]);
     if let Some(rev) = revision {
         cmd.args(["-r", rev]);
     }
+    if debug {
+        eprintln!("debug: running jj diff --git --no-pager{}", revision.as_ref().map(|r| format!(" -r {r}")).unwrap_or_default());
+    }
     let output = cmd.output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if debug {
+            eprintln!("debug: jj diff failed with stderr: {stderr}");
+        }
         bail!("jj diff failed: {stderr}");
+    }
+    if debug {
+        eprintln!("debug: jj diff returned {} bytes", output.stdout.len());
     }
     Ok(String::from_utf8(output.stdout)?)
 }
 
 /// Run `jj diff --git --from FROM --to TO` and return the raw output.
-pub fn get_jj_diff_from_to(from: &str, to: &str) -> Result<String> {
+pub fn get_jj_diff_from_to(from: &str, to: &str, debug: bool) -> Result<String> {
+    if debug {
+        eprintln!("debug: running jj diff --git --no-pager --from {from} --to {to}");
+    }
     let output = Command::new("jj")
         .args(["diff", "--git", "--no-pager", "--from", from, "--to", to])
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if debug {
+            eprintln!("debug: jj diff failed with stderr: {stderr}");
+        }
         bail!("jj diff failed: {stderr}");
+    }
+    if debug {
+        eprintln!("debug: jj diff returned {} bytes", output.stdout.len());
     }
     Ok(String::from_utf8(output.stdout)?)
 }

@@ -11,6 +11,9 @@ use diff::{assign_ids, get_jj_diff, parse_diff};
 #[derive(Parser)]
 #[command(name = "jj-hunk-tool", version, about = "Hunk-level operations for jj")]
 struct Cli {
+    /// Print debug info (jj commands, parsed hunks, annotations, routing decisions)
+    #[arg(long, global = true)]
+    debug: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -142,9 +145,6 @@ enum Command {
         /// Interactively review each hunk before absorbing
         #[arg(short, long)]
         interactive: bool,
-        /// Print debug info about annotation and routing decisions
-        #[arg(long)]
-        debug: bool,
     },
     /// Install the jj-surgeon skill for AI coding agents
     InstallSkill {
@@ -168,6 +168,7 @@ fn main() -> Result<()> {
     unsafe { std::env::set_var("EDITOR", "true") };
 
     let cli = Cli::parse();
+    let debug = cli.debug;
 
     match cli.command {
         Command::Hunks {
@@ -175,9 +176,12 @@ fn main() -> Result<()> {
             compact,
             file,
         } => {
-            let raw = get_jj_diff(&revision)?;
+            let raw = get_jj_diff(&revision, debug)?;
             let hunks = parse_diff(&raw);
             let identified = assign_ids(&hunks);
+            if debug {
+                eprintln!("debug: parsed {} hunks from diff", identified.len());
+            }
 
             let max_preview_lines = 4;
 
@@ -235,7 +239,7 @@ fn main() -> Result<()> {
             revision,
             reverse,
         } => {
-            let raw = get_jj_diff(&revision)?;
+            let raw = get_jj_diff(&revision, debug)?;
             let hunks = parse_diff(&raw);
             let identified = assign_ids(&hunks);
             for raw_spec in &hunk_ids {
@@ -264,7 +268,7 @@ fn main() -> Result<()> {
             insert_after,
             insert_before,
         } => {
-            let raw = get_jj_diff(&Some(revision.clone()))?;
+            let raw = get_jj_diff(&Some(revision.clone()), debug)?;
             let hunks = parse_diff(&raw);
             let identified = assign_ids(&hunks);
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
@@ -288,6 +292,7 @@ fn main() -> Result<()> {
                 message.as_deref(),
                 parallel,
                 &extra_refs,
+                debug,
             )?;
         }
         Command::Squash {
@@ -313,7 +318,7 @@ fn main() -> Result<()> {
             } else {
                 "@".to_string()
             };
-            let raw = get_jj_diff(&Some(diff_rev))?;
+            let raw = get_jj_diff(&Some(diff_rev), debug)?;
             let hunks = parse_diff(&raw);
             let identified = assign_ids(&hunks);
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
@@ -353,7 +358,7 @@ fn main() -> Result<()> {
                 extra_args.push(rev.clone());
             }
             let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
-            tool::squash_hunks(&specs, &extra_refs)?;
+            tool::squash_hunks(&specs, &extra_refs, debug)?;
         }
         Command::Diffedit {
             hunk_ids,
@@ -365,7 +370,7 @@ fn main() -> Result<()> {
             let (raw, jj_args) = if from.is_some() || to.is_some() {
                 let f = from.as_deref().unwrap_or("@");
                 let t = to.as_deref().unwrap_or("@");
-                let raw = diff::get_jj_diff_from_to(f, t)?;
+                let raw = diff::get_jj_diff_from_to(f, t, debug)?;
                 let mut args = vec![
                     "--from".to_string(), f.to_string(),
                     "--to".to_string(), t.to_string(),
@@ -376,7 +381,7 @@ fn main() -> Result<()> {
                 (raw, args)
             } else {
                 let rev = revision.as_deref().unwrap_or("@");
-                let raw = get_jj_diff(&Some(rev.to_string()))?;
+                let raw = get_jj_diff(&Some(rev.to_string()), debug)?;
                 let mut args = vec!["-r".to_string(), rev.to_string()];
                 if restore_descendants {
                     args.push("--restore-descendants".into());
@@ -387,7 +392,7 @@ fn main() -> Result<()> {
             let identified = assign_ids(&hunks);
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
             let jj_arg_refs: Vec<&str> = jj_args.iter().map(|s| s.as_str()).collect();
-            tool::diffedit_hunks(&specs, &jj_arg_refs)?;
+            tool::diffedit_hunks(&specs, &jj_arg_refs, debug)?;
         }
         Command::Restore {
             hunk_ids,
@@ -399,7 +404,7 @@ fn main() -> Result<()> {
             // Determine which diff to inspect and what jj args to use.
             // Default (no flags) = --changes-in @
             let (raw, jj_args) = if let Some(ref ci) = changes_in {
-                let raw = get_jj_diff(&Some(ci.clone()))?;
+                let raw = get_jj_diff(&Some(ci.clone()), debug)?;
                 let mut args = vec!["--changes-in".to_string(), ci.clone()];
                 if restore_descendants {
                     args.push("--restore-descendants".into());
@@ -408,7 +413,7 @@ fn main() -> Result<()> {
             } else if from.is_some() || into.is_some() {
                 let f = from.as_deref().unwrap_or("@");
                 let t = into.as_deref().unwrap_or("@");
-                let raw = diff::get_jj_diff_from_to(f, t)?;
+                let raw = diff::get_jj_diff_from_to(f, t, debug)?;
                 let mut args = vec!["--from".to_string(), f.to_string(), "--into".to_string(), t.to_string()];
                 if restore_descendants {
                     args.push("--restore-descendants".into());
@@ -416,7 +421,7 @@ fn main() -> Result<()> {
                 (raw, args)
             } else {
                 // Default: --changes-in @
-                let raw = get_jj_diff(&Some("@".to_string()))?;
+                let raw = get_jj_diff(&Some("@".to_string()), debug)?;
                 let mut args = vec!["--changes-in".to_string(), "@".to_string()];
                 if restore_descendants {
                     args.push("--restore-descendants".into());
@@ -427,17 +432,16 @@ fn main() -> Result<()> {
             let identified = assign_ids(&hunks);
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
             let jj_arg_refs: Vec<&str> = jj_args.iter().map(|s| s.as_str()).collect();
-            tool::restore_hunks(&specs, &jj_arg_refs)?;
+            tool::restore_hunks(&specs, &jj_arg_refs, debug)?;
         }
         Command::Absorb {
             hunk_ids,
             revision,
             dry_run,
             interactive,
-            debug,
         } => {
             let source = revision.as_deref().unwrap_or("@");
-            let raw = get_jj_diff(&Some(source.to_string()))?;
+            let raw = get_jj_diff(&Some(source.to_string()), debug)?;
             let hunks = parse_diff(&raw);
             let identified = assign_ids(&hunks);
             if identified.is_empty() {
