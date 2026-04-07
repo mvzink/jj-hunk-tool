@@ -1405,10 +1405,12 @@ fn install_skill_creates_reference_files() {
     let target = tempfile::tempdir().unwrap();
     run_install_skill(&["--target", target.path().to_str().unwrap()]);
     let refs_dir = target.path().join("jj-surgeon").join("references");
+    assert!(refs_dir.join("bisect.md").exists());
     assert!(refs_dir.join("conflict-resolution.md").exists());
     assert!(refs_dir.join("git-interop.md").exists());
     assert!(refs_dir.join("revset-reference.md").exists());
     assert!(refs_dir.join("template-reference.md").exists());
+    assert!(refs_dir.join("workspaces.md").exists());
 }
 
 #[test]
