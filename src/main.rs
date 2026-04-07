@@ -479,11 +479,7 @@ fn main() -> Result<()> {
 use std::path::PathBuf;
 use tool::HunkSpec;
 
-const SKILL_MD: &str = include_str!("../skills/jj-surgeon/SKILL.md");
-const REF_CONFLICT: &str = include_str!("../skills/jj-surgeon/references/conflict-resolution.md");
-const REF_GIT_INTEROP: &str = include_str!("../skills/jj-surgeon/references/git-interop.md");
-const REF_REVSET: &str = include_str!("../skills/jj-surgeon/references/revset-reference.md");
-const REF_TEMPLATE: &str = include_str!("../skills/jj-surgeon/references/template-reference.md");
+include!(concat!(env!("OUT_DIR"), "/skill_files.rs"));
 
 struct AgentTarget {
     label: &'static str,
@@ -530,15 +526,13 @@ fn install_skill(target: Option<&str>) -> Result<()> {
 
 fn install_skill_to(skills_dir: &PathBuf) -> Result<()> {
     let skill_dir = skills_dir.join("jj-surgeon");
-    let refs_dir = skill_dir.join("references");
-    std::fs::create_dir_all(&refs_dir)?;
-
-    std::fs::write(skill_dir.join("SKILL.md"), SKILL_MD)?;
-    std::fs::write(refs_dir.join("conflict-resolution.md"), REF_CONFLICT)?;
-    std::fs::write(refs_dir.join("git-interop.md"), REF_GIT_INTEROP)?;
-    std::fs::write(refs_dir.join("revset-reference.md"), REF_REVSET)?;
-    std::fs::write(refs_dir.join("template-reference.md"), REF_TEMPLATE)?;
-
+    for (rel_path, contents) in SKILL_FILES {
+        let dest = skill_dir.join(rel_path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&dest, contents)?;
+    }
     println!("Installed jj-surgeon skill to {}", skill_dir.display());
     Ok(())
 }
