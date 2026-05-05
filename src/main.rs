@@ -146,12 +146,6 @@ enum Command {
         #[arg(short, long)]
         interactive: bool,
     },
-    /// Install the jj-surgeon skill for AI coding agents
-    InstallSkill {
-        /// Target directory (overrides agent selection)
-        #[arg(long)]
-        target: Option<String>,
-    },
     /// Internal: JJ tool protocol handler (invoked by jj --tool)
     #[command(name = "_jj-tool", hide = true)]
     JjTool {
@@ -465,9 +459,6 @@ fn main() -> Result<()> {
             };
             tool::absorb_hunks(&selected, source, dry_run, interactive, debug)?;
         }
-        Command::InstallSkill { target } => {
-            install_skill(target.as_deref())?;
-        }
         Command::JjTool { left, right } => {
             tool::jj_tool_apply(&left, &right)?;
         }
@@ -476,66 +467,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-use std::path::PathBuf;
 use tool::HunkSpec;
-
-include!(concat!(env!("OUT_DIR"), "/skill_files.rs"));
-
-struct AgentTarget {
-    label: &'static str,
-    /// Path relative to $HOME
-    rel_path: &'static str,
-}
-
-const AGENT_TARGETS: &[AgentTarget] = &[
-    AgentTarget { label: "Standard (~/.agents/skills) [Gemini, Codex, OpenCode]", rel_path: ".agents/skills" },
-    AgentTarget { label: "Claude Code (~/.claude/skills)", rel_path: ".claude/skills" },
-    AgentTarget { label: "Gemini CLI (~/.gemini/skills)", rel_path: ".gemini/skills" },
-    AgentTarget { label: "OpenCode (~/.config/opencode/skills)", rel_path: ".config/opencode/skills" },
-];
-
-fn install_skill(target: Option<&str>) -> Result<()> {
-    if let Some(t) = target {
-        install_skill_to(&PathBuf::from(t))?;
-        return Ok(());
-    }
-
-    let home = std::env::var("HOME")
-        .map_err(|_| anyhow::anyhow!("HOME not set"))?;
-    let home = PathBuf::from(home);
-
-    let items: Vec<&str> = AGENT_TARGETS.iter().map(|t| t.label).collect();
-
-    let selections = dialoguer::MultiSelect::new()
-        .with_prompt("Install jj-surgeon skill for")
-        .items(&items)
-        .defaults(&[true, true, false, false])
-        .interact()?;
-
-    if selections.is_empty() {
-        println!("No agents selected.");
-        return Ok(());
-    }
-
-    for idx in selections {
-        let skills_dir = home.join(AGENT_TARGETS[idx].rel_path);
-        install_skill_to(&skills_dir)?;
-    }
-    Ok(())
-}
-
-fn install_skill_to(skills_dir: &PathBuf) -> Result<()> {
-    let skill_dir = skills_dir.join("jj-surgeon");
-    for (rel_path, contents) in SKILL_FILES {
-        let dest = skill_dir.join(rel_path);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&dest, contents)?;
-    }
-    println!("Installed jj-surgeon skill to {}", skill_dir.display());
-    Ok(())
-}
 
 /// Resolve hunk ID specs (with optional line ranges) against identified hunks.
 fn resolve_hunk_specs<'a>(

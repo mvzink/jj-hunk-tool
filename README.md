@@ -115,11 +115,10 @@ Then you can use `jj hunk hunks`, `jj hunk split abc1234`, etc.
 
 ## jj-surgeon skill
 
-The repo includes a comprehensive agent skill for working with jj in general as well as jj-hunk-tool (revsets, rebasing, conflict resolution, etc.). Install it with:
+The repo includes a comprehensive agent skill for working with jj in general as well as jj-hunk-tool (revsets, rebasing, conflict resolution, etc.). Install it with [skills](https://github.com/vercel-labs/skills):
 
 ```
-jj-hunk-tool install-skill              # interactive agent picker
-jj-hunk-tool install-skill --target DIR  # explicit directory
+npx skills add mvzink/jj-hunk-tool
 ```
 
 ## Disclaimer

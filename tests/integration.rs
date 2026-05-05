@@ -1371,61 +1371,6 @@ fn jj_tool_empty_patch() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// install-skill tests
-// ──────────────────────────────────────────────────────────────────────────────
-
-fn run_install_skill(args: &[&str]) -> std::process::Output {
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_jj-hunk-tool"));
-    let mut cmd_args = vec!["install-skill"];
-    cmd_args.extend_from_slice(args);
-    Command::new(&binary)
-        .args(&cmd_args)
-        .output()
-        .unwrap()
-}
-
-#[test]
-fn install_skill_creates_skill_file() {
-    let target = tempfile::tempdir().unwrap();
-    let output = run_install_skill(&["--target", target.path().to_str().unwrap()]);
-    assert!(
-        output.status.success(),
-        "install-skill failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let skill_file = target.path().join("jj-surgeon").join("SKILL.md");
-    assert!(skill_file.exists(), "jj-surgeon/SKILL.md should be created");
-    let content = std::fs::read_to_string(&skill_file).unwrap();
-    assert!(content.starts_with("---"), "should have YAML frontmatter");
-    assert!(content.contains("jj-hunk-tool"), "should reference jj-hunk-tool");
-}
-
-#[test]
-fn install_skill_creates_reference_files() {
-    let target = tempfile::tempdir().unwrap();
-    run_install_skill(&["--target", target.path().to_str().unwrap()]);
-    let refs_dir = target.path().join("jj-surgeon").join("references");
-    assert!(refs_dir.join("bisect.md").exists());
-    assert!(refs_dir.join("conflict-resolution.md").exists());
-    assert!(refs_dir.join("git-interop.md").exists());
-    assert!(refs_dir.join("revset-reference.md").exists());
-    assert!(refs_dir.join("template-reference.md").exists());
-    assert!(refs_dir.join("workspaces.md").exists());
-}
-
-#[test]
-fn install_skill_overwrites_existing() {
-    let target = tempfile::tempdir().unwrap();
-    let skill_dir = target.path().join("jj-surgeon");
-    std::fs::create_dir_all(&skill_dir).unwrap();
-    std::fs::write(skill_dir.join("SKILL.md"), "old content").unwrap();
-    let output = run_install_skill(&["--target", target.path().to_str().unwrap()]);
-    assert!(output.status.success());
-    let content = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
-    assert!(content.starts_with("---"), "should overwrite with new content");
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
 // absorb
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -1992,14 +1937,6 @@ fn absorb_multiple_files_to_different_ancestors() {
         z_diff.contains("ccc_absorbed"),
         "Z should have c.txt change, got: {z_diff}"
     );
-}
-
-#[test]
-fn install_skill_prints_success_message() {
-    let target = tempfile::tempdir().unwrap();
-    let output = run_install_skill(&["--target", target.path().to_str().unwrap()]);
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("Installed"), "should print success message");
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
