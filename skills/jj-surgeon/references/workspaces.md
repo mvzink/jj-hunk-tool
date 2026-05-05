@@ -13,7 +13,12 @@ jj workspaces are fundamentally different:
   no separate clone, no separate history, no separate refs.
 - **Shared operation log.** Every `jj` command in any workspace creates an
   operation entry visible to all workspaces. `jj op log` in workspace A shows
-  operations performed in workspace B.
+  operations performed in workspace B. **This makes `jj op restore <op-id>`
+  dangerous in multi-workspace repos** — it rewinds the entire shared state
+  back to that op, dropping every workspace's subsequent work. Prefer
+  `jj op revert <op-id>` (inverts one specific op) or
+  `jj --at-op=<op-id> restore -r @` (file-level recovery without touching
+  the op timeline). `jj undo` is fine — it only inverts the most recent op.
 - **No merge-back.** Commits created in one workspace are immediately visible in
   every other workspace. The main workspace can rebase, squash, bookmark, or
   push those commits — no pull, fetch, or merge needed.

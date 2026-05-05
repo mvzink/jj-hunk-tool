@@ -39,7 +39,10 @@ compiles. See
 [references/conflict-resolution.md](references/conflict-resolution.md).
 
 **Operation log.** Every command creates an operation entry. `jj undo` reverts
-the last operation. `jj op restore <id>` jumps to any past state.
+the last operation. To undo an older specific operation, use
+`jj op revert <op-id>` — it inverts just that one op. **Avoid
+`jj op restore <op-id>`**, which rewinds the entire repo (including other
+workspaces' work) to that point. See [Undoing operations](#undoing-operations).
 
 ## Always pass these flags
 
@@ -214,12 +217,32 @@ this happens — resolve them before continuing. See
 ## Undoing operations
 
 ```bash
-jj undo                                 # undo last operation
+jj undo                                 # undo last operation (alias for `jj op revert @`)
 jj op log --no-pager -n 10              # view recent operation history
-jj op restore <op-id>                   # restore to any past state
+jj op revert <op-id>                    # invert one specific past operation
 jj revert -r <rev> -d @                 # create reverse-patch of <rev> on @
 jj abandon <rev>                        # drop a revision, rebase descendants
 ```
+
+### Operation-log safety in shared repos
+
+The operation log is **shared across all workspaces** (see
+[references/workspaces.md](references/workspaces.md)). This makes one command
+dangerous:
+
+- **`jj op restore <op-id>` is destructive across workspaces.** It rewinds the
+  whole repo state — including bookmarks, commits, and the `@` of *every*
+  workspace — back to that op. Any work another workspace (or the human) did
+  after that op is dropped from the current view. Never run it just to undo
+  your own changes.
+- **Use `jj op revert <op-id>` instead.** It inverts a single targeted
+  operation and creates a new op on top, so unrelated work in other workspaces
+  is preserved.
+- **For file-level recovery, use `jj --at-op=<op-id> restore -r @`** (or
+  similar) to restore specific files from a past state without touching the
+  op log timeline.
+- `jj undo` is safe — it inverts only the most recent op (equivalent to
+  `jj op revert @`).
 
 ## Conflicts
 
@@ -331,9 +354,13 @@ jj rebase -r <rev> -B <before>          # move <rev> before <before>
 
 ```bash
 jj undo                                 # undo last operation
-jj op log --no-pager                    # find operation to restore
-jj op restore <op-id>                   # restore to any point
+jj op log --no-pager                    # find operation to revert
+jj op revert <op-id>                    # invert one specific past op (safe in shared repos)
 ```
+
+Avoid `jj op restore <op-id>` — it rewinds *all* workspaces' state and can
+clobber concurrent work. See
+[Operation-log safety](#operation-log-safety-in-shared-repos).
 
 ## Common pitfalls for agents
 
@@ -346,6 +373,12 @@ jj op restore <op-id>                   # restore to any point
   hunk-level.
 - **NEVER use bare `jj diffedit`.** It opens a diff editor. Use
   `jj-hunk-tool diffedit` with explicit hunk IDs.
+- **NEVER use `jj op restore <op-id>` to undo your own changes.** The
+  operation log is shared across workspaces, so `op restore` rewinds *every*
+  workspace's state — clobbering work the user or another agent did
+  concurrently. Use `jj op revert <op-id>` to invert a single targeted op,
+  or `jj undo` for the most recent one. See
+  [Operation-log safety](#operation-log-safety-in-shared-repos).
 - Do NOT `jj abandon @` to "clean up" an empty working copy. It's normal.
 - **Always leave `@` empty when you're done working.** Use `jj commit -m "msg"`
   to finalize a change — NOT `jj describe`, which leaves your changes in `@`.
