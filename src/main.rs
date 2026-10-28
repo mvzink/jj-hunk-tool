@@ -252,7 +252,10 @@ fn main() -> Result<()> {
                 } else {
                     (*hunk).clone()
                 };
-                print!("{}", git_surgeon::patch::build_patch(&patched));
+                print!(
+                    "{}",
+                    git_surgeon::patch::build_patch(&tool::balance_context(&patched))
+                );
             }
         }
         Command::Split {
