@@ -853,6 +853,37 @@ fn split_with_inline_range() {
     assert!(desc.contains("partial"));
 }
 
+/// Leaving the `port` change behind turns its removal into context, so the
+/// addition has more context before it than after. GNU patch rejects uneven
+/// context away from the start and end of a file.
+#[test]
+fn split_partial_hunk_with_uneven_context() {
+    let padding = "# padding\n".repeat(4);
+    let config = |port: &str, retries: &str| {
+        format!(
+            "{padding}[server]\nhost = localhost\nport = {port}\nuser = admin\ntimeout = 30\n{retries}[client]\n{padding}"
+        )
+    };
+    let changed = config("9090", "retries = 3\n");
+
+    let repo = TestRepo::new();
+    repo.commit_file("a.conf", &config("8080", ""));
+    repo.write_file("a.conf", &changed);
+
+    // Line 8 of the hunk is the `retries` addition
+    let id = repo.get_single_hunk_id(&[]);
+    let spec = format!("{id}:8");
+    let patch = repo.tool_ok(&["patch", &spec]);
+    assert!(patch.contains("@@ -7,6 +7,7 @@"), "uneven context: {patch}");
+
+    repo.tool_ok(&["split", &spec, "-m", "retries"]);
+
+    let split = repo.jj(&["file", "show", "-r", "@-", "a.conf"]);
+    assert!(split.contains("port = 8080"));
+    assert!(split.contains("retries = 3"));
+    assert_eq!(repo.read_file("a.conf"), changed);
+}
+
 #[test]
 fn split_invalid_id() {
     let repo = TestRepo::new();

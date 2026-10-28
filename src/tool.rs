@@ -178,9 +178,71 @@ pub fn build_combined_patch(specs: &[HunkSpec<'_>], reverse: bool) -> Result<Str
         } else {
             (*hunk).clone()
         };
-        combined.push_str(&git_surgeon::patch::build_patch(&patched));
+        combined.push_str(&git_surgeon::patch::build_patch(&balance_context(&patched)));
     }
     Ok(combined)
+}
+
+/// Trim a hunk's leading or trailing context, whichever is longer, to the
+/// length of the other.
+///
+/// Slicing turns unselected removals into context, which can leave more on one
+/// side of the changes than the other. GNU patch takes uneven context to mean
+/// the hunk sits at the start or end of the file, and rejects it anywhere else
+/// (https://github.com/mvzink/jj-hunk-tool/issues/2).
+pub fn balance_context(hunk: &DiffHunk) -> DiffHunk {
+    let lines = &hunk.lines;
+    let is_context = |l: &String| l.starts_with(' ');
+    let Some(first_change) = lines.iter().position(|l| !is_context(l)) else {
+        return hunk.clone();
+    };
+
+    // A "\ No newline at end of file" marker belongs to the line before it
+    let marker = lines.last().filter(|l| l.starts_with('\\'));
+    let body = &lines[..lines.len() - usize::from(marker.is_some())];
+    let leading = first_change;
+    let trailing = body.iter().rev().take_while(|l| is_context(l)).count();
+    if leading == trailing {
+        return hunk.clone();
+    }
+
+    let keep = leading.min(trailing);
+    let skip = leading - keep;
+    let end = body.len() - (trailing - keep);
+    let mut new_lines = body[skip..end].to_vec();
+    if let Some(marker) = marker
+        && trailing == keep
+    {
+        new_lines.push(marker.clone());
+    }
+
+    let count = |side: char| {
+        new_lines
+            .iter()
+            .filter(|l| l.starts_with(side) || l.starts_with(' '))
+            .count()
+    };
+    let (old_count, new_count) = (count('-'), count('+'));
+    // A side with no lines left is numbered by the line before the hunk
+    let start = |orig: usize, count: usize| {
+        let start = orig + skip;
+        if count == 0 { start - 1 } else { start }
+    };
+    let (old_start, new_start) = parse_header_ranges(&hunk.header);
+    let func_ctx = hunk.header.splitn(3, "@@").nth(2).unwrap_or("");
+
+    DiffHunk {
+        header: format!(
+            "@@ -{},{} +{},{} @@{}",
+            start(old_start, old_count),
+            old_count,
+            start(new_start, new_count),
+            new_count,
+            func_ctx
+        ),
+        lines: new_lines,
+        ..hunk.clone()
+    }
 }
 
 /// Run a jj command with our tool configured via inline --config flags.
@@ -1177,5 +1239,77 @@ mod tests {
             HunkFingerprint::from_hunk(&hunk1),
             HunkFingerprint::from_hunk(&hunk2),
         );
+    }
+
+    fn hunk(header: &str, lines: &[&str]) -> DiffHunk {
+        DiffHunk {
+            file: "a.txt".into(),
+            old_file: "a.txt".into(),
+            new_file: "a.txt".into(),
+            file_header: String::new(),
+            header: header.into(),
+            lines: lines.iter().map(|l| l.to_string()).collect(),
+            unsupported_metadata: None,
+        }
+    }
+
+    #[test]
+    fn balance_context_trims_longer_leading_context() {
+        let balanced = balance_context(&hunk(
+            "@@ -4,9 +4,10 @@ fn main",
+            &[" a", " b", " c", " d", " e", " f", "+new", " g", " h", " i"],
+        ));
+        assert_eq!(balanced.header, "@@ -7,6 +7,7 @@ fn main");
+        assert_eq!(balanced.lines, [" d", " e", " f", "+new", " g", " h", " i"]);
+    }
+
+    #[test]
+    fn balance_context_trims_longer_trailing_context() {
+        let balanced = balance_context(&hunk(
+            "@@ -4,6 +4,6 @@",
+            &[" a", "-old", "+new", " b", " c", " d", " e"],
+        ));
+        assert_eq!(balanced.header, "@@ -4,3 +4,3 @@");
+        assert_eq!(balanced.lines, [" a", "-old", "+new", " b"]);
+    }
+
+    #[test]
+    fn balance_context_leaves_even_context_alone() {
+        let even = hunk("@@ -4,3 +4,3 @@", &[" a", "-old", "+new", " b"]);
+        assert_eq!(balance_context(&even).header, even.header);
+        assert_eq!(balance_context(&even).lines, even.lines);
+    }
+
+    #[test]
+    fn balance_context_numbers_an_emptied_side_by_the_line_before() {
+        let balanced = balance_context(&hunk("@@ -1,3 +1,4 @@", &["+new", " a", " b", " c"]));
+        assert_eq!(balanced.header, "@@ -0,0 +1,1 @@");
+        assert_eq!(balanced.lines, ["+new"]);
+
+        let balanced = balance_context(&hunk("@@ -5,2 +5,3 @@", &[" a", " b", "+new"]));
+        assert_eq!(balanced.header, "@@ -6,0 +7,1 @@");
+        assert_eq!(balanced.lines, ["+new"]);
+    }
+
+    const NO_NEWLINE: &str = "\\ No newline at end of file";
+
+    #[test]
+    fn balance_context_drops_a_marker_with_its_line() {
+        let balanced = balance_context(&hunk(
+            "@@ -1,3 +1,3 @@",
+            &["-old", "+new", " a", " b", NO_NEWLINE],
+        ));
+        assert_eq!(balanced.header, "@@ -1,1 +1,1 @@");
+        assert_eq!(balanced.lines, ["-old", "+new"]);
+    }
+
+    #[test]
+    fn balance_context_keeps_a_marker_on_a_change() {
+        let balanced = balance_context(&hunk(
+            "@@ -1,2 +1,2 @@",
+            &[" a", "-old", NO_NEWLINE, "+new", NO_NEWLINE],
+        ));
+        assert_eq!(balanced.header, "@@ -2,1 +2,1 @@");
+        assert_eq!(balanced.lines, ["-old", NO_NEWLINE, "+new", NO_NEWLINE]);
     }
 }
