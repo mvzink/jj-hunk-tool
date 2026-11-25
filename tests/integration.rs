@@ -37,6 +37,14 @@ impl TestRepo {
         std::fs::write(path, content).unwrap();
     }
 
+    fn write_bytes(&self, name: &str, content: &[u8]) {
+        let path = self.path().join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
     fn read_file(&self, name: &str) -> String {
         std::fs::read_to_string(self.path().join(name)).unwrap()
     }
@@ -326,6 +334,58 @@ fn hunks_file_filter_nonexistent() {
 
     let output = repo.tool_ok(&["hunks", "--file", "nope.txt"]);
     assert!(output.trim().is_empty());
+}
+
+/// Content that is not valid UTF-8 but contains no NUL byte, so `jj diff --git`
+/// renders it as a text diff instead of "Binary files differ".
+const NON_UTF8: &[u8] = b"age-encryption.org/v1\n\xc3\x28\xa0\xa1\xff\xfe\n";
+
+#[test]
+fn hunks_non_utf8_file_in_diff() {
+    let repo = TestRepo::new();
+    repo.commit_file("text.txt", "one\n");
+    repo.write_file("text.txt", "two\n");
+    repo.write_bytes("secret.age", NON_UTF8);
+
+    // The non-UTF-8 file must not abort the whole command: the plain-text
+    // file's hunk is still listed, and the non-UTF-8 file is treated like a
+    // binary file (omitted, hence unselectable).
+    let output = repo.tool_ok(&["hunks"]);
+    assert!(output.contains("text.txt"), "text hunk missing: {output}");
+    assert!(
+        !output.contains("secret.age"),
+        "non-UTF-8 file should not be listed: {output}"
+    );
+
+    // `--file` must work even though another file in the diff is non-UTF-8.
+    let filtered = repo.tool_ok(&["hunks", "--file", "text.txt"]);
+    assert!(filtered.contains("text.txt"), "filtered output: {filtered}");
+    assert!(
+        !filtered.contains("secret.age"),
+        "filtered output: {filtered}"
+    );
+}
+
+#[test]
+fn split_non_utf8_file_in_diff() {
+    let repo = TestRepo::new();
+    repo.commit_file("text.txt", "one\n");
+    repo.write_file("text.txt", "two\n");
+    repo.write_bytes("secret.age", NON_UTF8);
+
+    let hunk_id = repo.get_hunk_id_for_file("text.txt", &[]);
+    repo.tool_ok(&["split", &hunk_id, "-m", "split text hunk"]);
+
+    // The text hunk moved to @-, and the non-UTF-8 file stayed behind in @,
+    // byte-for-byte unchanged.
+    let first = repo.jj(&["show", "--git", "@-"]);
+    assert!(first.contains("text.txt"), "first commit: {first}");
+    assert!(!first.contains("secret.age"), "first commit: {first}");
+    assert_eq!(
+        std::fs::read(repo.path().join("secret.age")).unwrap(),
+        NON_UTF8,
+        "split must not rewrite non-UTF-8 file content"
+    );
 }
 
 #[test]

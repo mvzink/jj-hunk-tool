@@ -128,7 +128,51 @@ pub fn get_current_op_id() -> Result<String> {
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
-/// Run `jj diff --git` for the given revision and return the raw output.
+/// Marker that starts each file's section in `jj diff --git` output.
+const DIFF_FILE_MARKER: &[u8] = b"diff --git ";
+
+/// Decode `jj diff --git` output, dropping file sections that are not valid UTF-8.
+///
+/// jj renders a non-UTF-8 file that contains no NUL byte as a text diff rather
+/// than "Binary files differ", but such bytes cannot be represented in the
+/// `String` the diff parser works on. Dropping the offending section treats the
+/// file the same way jj's own binary files are treated: it is not listed and
+/// cannot be selected. Decoding lossily instead would make the file selectable
+/// and would let `split`/`squash`/`restore` write replacement characters back to
+/// disk, silently corrupting it.
+fn decode_diff(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    let mut section_start = 0;
+    let mut line_start = 0;
+    while line_start < bytes.len() {
+        let line_end = bytes[line_start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(bytes.len(), |i| line_start + i + 1);
+        if line_start > section_start && bytes[line_start..line_end].starts_with(DIFF_FILE_MARKER) {
+            push_diff_section(&mut out, &bytes[section_start..line_start]);
+            section_start = line_start;
+        }
+        line_start = line_end;
+    }
+    push_diff_section(&mut out, &bytes[section_start..]);
+    out
+}
+
+/// Append one file's diff section to `out` if it is valid UTF-8.
+fn push_diff_section(out: &mut String, section: &[u8]) {
+    match std::str::from_utf8(section) {
+        Ok(text) => out.push_str(text),
+        Err(_) => {
+            let header = String::from_utf8_lossy(section);
+            let header = header.lines().next().unwrap_or("");
+            eprintln!("warning: skipping non-UTF-8 file (treated as binary): {header}");
+        }
+    }
+}
+
+/// Run `jj diff --git` for the given revision and return its text diff.
+/// File sections that are not valid UTF-8 are omitted (see [`decode_diff`]).
 pub fn get_jj_diff(revision: &Option<String>, debug: bool) -> Result<String> {
     let mut cmd = Command::new("jj");
     cmd.args(["diff", "--git", "--no-pager"]);
@@ -155,10 +199,11 @@ pub fn get_jj_diff(revision: &Option<String>, debug: bool) -> Result<String> {
     if debug {
         eprintln!("debug: jj diff returned {} bytes", output.stdout.len());
     }
-    Ok(String::from_utf8(output.stdout)?)
+    Ok(decode_diff(&output.stdout))
 }
 
-/// Run `jj diff --git --from FROM --to TO` and return the raw output.
+/// Run `jj diff --git --from FROM --to TO` and return its text diff.
+/// File sections that are not valid UTF-8 are omitted (see [`decode_diff`]).
 pub fn get_jj_diff_from_to(from: &str, to: &str, debug: bool) -> Result<String> {
     if debug {
         eprintln!("debug: running jj diff --git --no-pager --from {from} --to {to}");
@@ -176,5 +221,5 @@ pub fn get_jj_diff_from_to(from: &str, to: &str, debug: bool) -> Result<String> 
     if debug {
         eprintln!("debug: jj diff returned {} bytes", output.stdout.len());
     }
-    Ok(String::from_utf8(output.stdout)?)
+    Ok(decode_diff(&output.stdout))
 }
