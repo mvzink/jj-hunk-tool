@@ -1,0 +1,20 @@
+# Hegel settings for the property tests in `tests/properties.rs`.
+#
+# Every generated case builds a real jj repository and shells out to `jj`
+# several times, so Hegel's default of 100 cases per property is far more than
+# this suite can afford. 32 keeps the whole file fast; raise it for a longer
+# soak with `HEGEL_TEST_CASES=500 cargo nextest run --test properties` (the
+# environment variable wins over a profile, but not over a `test_cases`
+# argument compiled into a test).
+#
+# `common` extends the reserved `base` profile rather than `default`, so that
+# both shipped environment profiles can name it without a cycle.
+[profiles.common]
+extends = "base"
+test_cases = 32
+
+[profiles.development]
+extends = "common"
+
+[profiles.ci]
+extends = "common"
