@@ -10,3 +10,14 @@ console = "0.16"
 git-surgeon = "0.1.14"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 tempfile = "3"
+
+[dev-dependencies]
+# Pinned exactly: Hegel is in beta and free to make breaking API changes.
+hegeltest = "=0.54.2"
+
+# Hegel drives its generation engine (hegeltest-c) through a C ABI. Building it
+# unoptimised costs ~67us per draw against ~7us optimised, which is noise next
+# to the ~200ms an `jj` subprocess costs, but a failing property replays its body
+# hundreds of times while shrinking, so the optimised engine is free to have.
+[profile.dev.package.hegeltest-c]
+opt-level = 3
