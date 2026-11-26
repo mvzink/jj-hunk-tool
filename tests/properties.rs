@@ -235,6 +235,10 @@ struct Case {
     /// Plain-text file that provably changes and whose path is safe for
     /// `patch -p1` (no spaces), so mutation properties can select its hunks.
     text: String,
+    /// The non-UTF-8 file that is *added*, so its content must appear in the
+    /// diff body. Properties assert on this file's own section: see
+    /// [`mixed_case`] for why it cannot be swallowed by rename detection.
+    junk: String,
 }
 
 impl Case {
@@ -304,9 +308,21 @@ fn text_content(tc: &TestCase, allow_crlf: bool) -> Bytes {
     Bytes(text.into_bytes())
 }
 
-/// Content that is not valid UTF-8 and contains no NUL byte, so `jj diff --git`
-/// renders it as a text diff (the issue #1 trigger). The `\xff\xfe` prefix makes
-/// invalidity unconditional rather than a property of the random body.
+/// The `age`-shaped non-UTF-8 content: not valid UTF-8 and with no NUL byte, so
+/// `jj diff --git` renders it as a text diff (the issue #1 trigger). The
+/// `\xff\xfe` prefix makes invalidity unconditional rather than a property of the
+/// random body.
+///
+/// This shape is reserved for the *added* file in [`mixed_case`]. jj's rename
+/// detection collapses a deleted/added pair whose contents are similar — even
+/// with different bodies, and completely when they are byte-identical — into a
+/// body-less `rename from`/`rename to` section, which carries no undecodable
+/// bytes at all. Keeping this shape to the added file means nothing that gets
+/// deleted can be its rename source. Measured against jj 0.44: an added
+/// `age`-shaped file next to a deleted *blob*-shaped one (see
+/// [`junk_blob_content`]) is never rename- or copy-detected, while an
+/// identical-pair rename is (which [`body_less_rename_section_is_handled`]
+/// covers deliberately).
 #[hegel::composite]
 fn non_utf8_content(tc: &TestCase) -> Bytes {
     let body: Vec<u8> = tc.draw(gs::vecs(gs::integers::<u8>().min_value(1)).max_size(24));
@@ -316,13 +332,31 @@ fn non_utf8_content(tc: &TestCase) -> Bytes {
     Bytes(bytes)
 }
 
-/// Anything a working tree may hold.
+/// Non-UTF-8 content of a *different shape* from [`non_utf8_content`], for the
+/// extra files in [`mixed_case`].
+///
+/// It starts with a bare continuation byte (`0x80..=0xBF`), which cannot begin a
+/// valid UTF-8 sequence, so invalidity does not depend on what the random body
+/// happens to be — the same trap as "just draw high bytes and hope". Being a
+/// different shape from [`non_utf8_content`] also keeps renames from folding an
+/// extra file into the `age`-shaped one.
+#[hegel::composite]
+fn junk_blob_content(tc: &TestCase) -> Bytes {
+    let lead: u8 = tc.draw(gs::integers::<u8>().min_value(0x80).max_value(0xbf));
+    let body: Vec<u8> = tc.draw(gs::vecs(gs::integers::<u8>().min_value(1)).max_size(24));
+    let mut bytes = vec![lead];
+    bytes.extend_from_slice(&body);
+    bytes.push(b'\n');
+    Bytes(bytes)
+}
+
+/// Anything a working tree may hold, for the extra files of a case.
 #[hegel::composite]
 fn arbitrary_content(tc: &TestCase) -> Bytes {
     if tc.draw(gs::booleans()) {
         tc.draw(text_content(true))
     } else {
-        tc.draw(non_utf8_content())
+        tc.draw(junk_blob_content())
     }
 }
 
@@ -468,7 +502,7 @@ fn mixed_case(tc: &TestCase, spaced_text_path: bool, crlf_ok: bool) -> Case {
     let base_text = tc.draw(text_content(crlf_ok));
     let mutation = tc.draw(mutation());
     let junk_path = tc.draw(awkward_path());
-    let junk = tc.draw(non_utf8_content());
+    let junk_content = tc.draw(non_utf8_content());
     let extras: Vec<(String, Option<Bytes>, Option<Bytes>)> = tc.draw(
         gs::vecs(hegel::tuples!(
             awkward_path(),
@@ -488,9 +522,9 @@ fn mixed_case(tc: &TestCase, spaced_text_path: bool, crlf_ok: bool) -> Case {
             head: Some(mutate(&base_text, mutation)),
         },
         FileSpec {
-            path: junk_path,
+            path: junk_path.clone(),
             base: None,
-            head: Some(junk),
+            head: Some(junk_content),
         },
     ];
     for (path, base, head) in extras {
@@ -500,7 +534,11 @@ fn mixed_case(tc: &TestCase, spaced_text_path: bool, crlf_ok: bool) -> Case {
             head,
         });
     }
-    Case { files, text }
+    Case {
+        files,
+        text,
+        junk: junk_path,
+    }
 }
 
 /// A text-only repository whose primary file provably has two hunks (the first
@@ -556,7 +594,33 @@ fn text_case(tc: &TestCase) -> Case {
             head,
         });
     }
-    Case { files, text }
+    Case {
+        files,
+        text,
+        // This case family is text-only on purpose (see the doc comment), so it
+        // carries no non-UTF-8 file and has nothing to point `junk` at.
+        junk: String::new(),
+    }
+}
+
+/// A repository whose only change is an identical-content rename of a
+/// non-UTF-8 file: `from` is deleted and `to` is added with exactly the same
+/// bytes, so jj reports a body-less `rename from`/`rename to` section and the
+/// diff contains *no* undecodable bytes at all.
+///
+/// That is legitimate jj output, not a bug, and it is exactly the shape that
+/// used to swallow property 1's undecodable section. It is kept as its own case
+/// so the no-abort guarantee is still tested on it, with the honest expectation
+/// that there is nothing to decode — see
+/// [`body_less_rename_section_is_handled`].
+#[hegel::composite]
+fn rename_case(tc: &TestCase) -> (String, String, Bytes) {
+    let content = tc.draw(non_utf8_content());
+    let from = tc.draw(awkward_path());
+    let mut seen = BTreeSet::new();
+    let from = uniquify(from, &mut seen);
+    let to = uniquify(tc.draw(awkward_path()), &mut seen);
+    (from, to, content)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -781,11 +845,42 @@ fn commands_never_abort_on_arbitrary_diff_bytes(tc: TestCase) {
     let repo = build_repo(&case);
     let diff = repo.jj(&["diff", "--git", "-r", "@"]);
 
-    // The precondition that makes this case exercise issue #1 at all: jj's raw
-    // diff cannot be decoded as UTF-8 as a whole.
+    // Coverage assertions — this is the "is the interesting input actually
+    // present?" check, and it costs nothing extra: the diff is already fetched
+    // above and parsed for the oracle below, so the coverage question is one
+    // predicate over bytes we already hold (no second `jj` run).
+    //
+    // It is written against the added non-UTF-8 file's *own* section, not just
+    // "some undecodable bytes exist", because that is the shape that can quietly
+    // disappear: jj's rename detection folds a deleted/added pair with similar
+    // content into a body-less `rename from`/`rename to` section. If that ever
+    // happens to the added file here, the property must fail loudly instead of
+    // testing nothing.
+    let undecodable_sections: Vec<&[u8]> = diff_sections(&diff)
+        .into_iter()
+        .filter(|section| std::str::from_utf8(section).is_err())
+        .collect();
+    tc.note(&format!(
+        "undecodable diff sections: {} of {}",
+        undecodable_sections.len(),
+        diff_sections(&diff).len()
+    ));
     assert!(
         std::str::from_utf8(&diff).is_err(),
         "the generated diff decodes as UTF-8, so it does not exercise issue #1: {case:#?}"
+    );
+    let junk_section = section(&diff, &case.junk).unwrap_or_else(|| {
+        panic!(
+            "the added non-UTF-8 file {:?} has no diff section of its own — \
+             rename/copy detection swallowed it, so this case cannot test issue #1: {case:#?}",
+            case.junk
+        )
+    });
+    assert!(
+        std::str::from_utf8(junk_section).is_err(),
+        "the added non-UTF-8 file {:?} has a decodable section, so its bytes are not \
+         reaching the decode path under test: {case:#?}",
+        case.junk
     );
 
     // Every hunk jj shows for a decodable section must be listed, and nothing
@@ -853,6 +948,29 @@ fn file_filter_isolates_plain_text_file(tc: TestCase) {
     let repo = build_repo(&case);
     let paths = case.paths();
     let diff = repo.jj(&["diff", "--git", "-r", "@"]);
+
+    // Coverage assertion, free (the diff is already fetched): the *pathological
+    // company* this property is about must really be in the diff. Without it the
+    // property still passes when jj's rename/copy detection folds the non-UTF-8
+    // file away, which would silently stop it testing `--file` isolation.
+    let junk_section = section(&diff, &case.junk).unwrap_or_else(|| {
+        panic!(
+            "the added non-UTF-8 file {:?} has no diff section of its own, so this case does not \
+             exercise `--file` isolation: {case:#?}",
+            case.junk
+        )
+    });
+    tc.note(&format!(
+        "junk section {:?} undecodable: {}",
+        case.junk,
+        std::str::from_utf8(junk_section).is_err()
+    ));
+    assert!(
+        std::str::from_utf8(junk_section).is_err(),
+        "the file {:?} that should make this case pathological is decodable: {case:#?}",
+        case.junk
+    );
+
     let text_section = section(&diff, &case.text).expect("text file always changes");
     let expected = hunk_blocks(text_section);
     assert!(
@@ -1140,4 +1258,100 @@ fn selected_hunks_apply_like_a_hand_built_patch(tc: TestCase) {
         "split commit content differs from the independently applied subset"
     );
     assert_eq!(&repo.jj_file("@", &primary_path), &head);
+}
+
+/// Property 6 — the body-less rename shape.
+///
+/// jj's rename detection turns a deleted/added pair with identical content into
+/// a `rename from`/`rename to` section with no hunk and no body. For a
+/// non-UTF-8 file that means the diff carries no undecodable bytes at all: the
+/// file's bytes are not in the diff, so nothing can be decoded, listed or
+/// corrupted. The property asserts the honest expectation for that shape —
+/// every command still exits 0, nothing reports a decode error, the listing
+/// matches the (empty) set of hunks jj shows, and no `U+FFFD` appears — rather
+/// than claiming undecodable bytes are present.
+///
+/// Kills: the abort class on a shape that has no body to decode (e.g. a future
+/// "decode only sections with hunks" tweak that mishandles metadata-only
+/// sections), and it keeps the identical-content scenario covered now that
+/// [`mixed_case`] deliberately avoids it.
+#[hegel::test]
+fn body_less_rename_section_is_handled(tc: TestCase) {
+    let (from, to, content) = tc.draw(rename_case());
+    tc.note(&format!("rename {from:?} -> {to:?} with {content:?}"));
+    let repo = Repo::init();
+    repo.write(&from, content.as_slice());
+    repo.jj(&["commit", "-m", "base"]);
+    repo.remove(&from);
+    repo.write(&to, content.as_slice());
+
+    let diff = repo.jj(&["diff", "--git", "-r", "@"]);
+
+    // Coverage assertion, free (the diff is already fetched): the case must be
+    // one of the two interesting shapes — either jj folded the pair into a
+    // metadata-only rename (today), or it did not and the bytes are in a hunk.
+    // Anything else means the generator stopped producing the scenario.
+    let rename_markers = line_offsets(&diff)
+        .iter()
+        .filter(|(_, line)| line.starts_with(b"rename from ") || line.starts_with(b"rename to "))
+        .count();
+    let undecodable = diff_sections(&diff)
+        .into_iter()
+        .filter(|section| std::str::from_utf8(section).is_err())
+        .count();
+    tc.note(&format!(
+        "rename markers: {rename_markers}, undecodable sections: {undecodable}"
+    ));
+    assert!(
+        rename_markers >= 2 || undecodable >= 1,
+        "expected jj to either rename-detect this pair (>=2 rename markers) or to put the bytes \
+         in a hunk (>=1 undecodable section), got {rename_markers} markers and {undecodable} \
+         undecodable sections:\n{}",
+        String::from_utf8_lossy(&diff)
+    );
+
+    let expected_listed: usize = diff_sections(&diff)
+        .into_iter()
+        .filter(|section| std::str::from_utf8(section).is_ok())
+        .map(|section| hunk_blocks(section).len())
+        .sum();
+    let run = repo.tool_ok(&["hunks"]);
+    assert!(
+        !has_decode_error(&run.stderr),
+        "hunks surfaced a decode error on a body-less rename: {}",
+        run.stderr
+    );
+    assert_eq!(
+        count_reported(&run.stdout),
+        expected_listed,
+        "hunks listed a different number of hunks than jj's decodable sections hold\n{}",
+        run.stdout
+    );
+    assert!(
+        !run.stdout.contains('\u{fffd}'),
+        "hunks output contains U+FFFD:\n{}",
+        run.stdout
+    );
+
+    // Same for the other read-only entry point, and for the file-scoped listing
+    // of the renamed-to path: no hunks exist for it, so it must list nothing
+    // rather than abort.
+    let absorb = repo.tool_ok(&["absorb", "--dry-run"]);
+    assert!(
+        !has_decode_error(&absorb.stderr),
+        "absorb --dry-run surfaced a decode error on a body-less rename: {}",
+        absorb.stderr
+    );
+    let scoped = repo.tool_ok(&["hunks", "--file", &to]);
+    assert!(
+        !has_decode_error(&scoped.stderr),
+        "hunks --file {to:?} surfaced a decode error: {}",
+        scoped.stderr
+    );
+    assert_eq!(
+        count_reported(&scoped.stdout),
+        0,
+        "a body-less rename has no hunks, so --file must list none:\n{}",
+        scoped.stdout
+    );
 }

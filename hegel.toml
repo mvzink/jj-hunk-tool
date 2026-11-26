@@ -1,20 +1,43 @@
 # Hegel settings for the property tests in `tests/properties.rs`.
 #
-# Every generated case builds a real jj repository and shells out to `jj`
-# several times, so Hegel's default of 100 cases per property is far more than
-# this suite can afford. 32 keeps the whole file fast; raise it for a longer
-# soak with `HEGEL_TEST_CASES=500 cargo nextest run --test properties` (the
-# environment variable wins over a profile, but not over a `test_cases`
-# argument compiled into a test).
+# Case counts are per property, not per file: six properties mean 6 x N generated
+# jj repositories per full run of the file. Measured on an 8-core dev box (see the
+# soak notes in the PR): ~23 cases/s aggregate, so N=32 is ~7 s, N=200 is ~45 s and
+# N=2000 is ~7-8 minutes.
 #
-# `common` extends the reserved `base` profile rather than `default`, so that
-# both shipped environment profiles can name it without a cycle.
+# `HEGEL_TEST_CASES=<n>` still overrides the case count for an ad-hoc run
+# (`HEGEL_TEST_CASES=500 cargo nextest run --test properties`); it wins over a
+# profile but not over a `test_cases` argument compiled into a test, which is why
+# no test pins one.
+#
+# `common` extends the reserved `base` profile rather than `default`, so both
+# shipped environment profiles can name it without a cycle.
 [profiles.common]
 extends = "base"
 test_cases = 32
 
+# Local default: the fast loop, unchanged.
 [profiles.development]
 extends = "common"
 
+# Every-push CI. Hegel's shipped `ci` profile already derandomizes and disables
+# the example database (see docs::settings); this section only raises the case
+# count from the local 32 to 200. That is ~45 s on the reference box — cheap
+# enough for every push, and five times the input diversity of a local run.
 [profiles.ci]
 extends = "common"
+test_cases = 200
+
+# Periodic soak, selected with `HEGEL_DEFAULT_PROFILE=soak` (for example in a
+# scheduled CI job): 2000 cases per property, ~7-8 minutes on the reference box.
+#
+# `derandomize = false` is deliberate and is the whole point of this profile.
+# Hegel's `ci` profile derandomizes — it derives a fixed seed from the test name —
+# so a fixed seed with a fixed case count replays exactly the same sequence on
+# every run, and a longer derandomized soak is just the same inputs again. Turning
+# derandomization off is what makes a periodic run explore new repositories; a
+# failure is still reproducible, because Hegel prints a
+# `#[hegel::reproduce_failure("…")]` blob for it.
+[profiles.soak]
+test_cases = 2000
+derandomize = false
