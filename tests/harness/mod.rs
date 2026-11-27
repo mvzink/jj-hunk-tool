@@ -552,6 +552,42 @@ pub fn section<'a>(diff: &'a [u8], path: &str) -> Option<&'a [u8]> {
     Some(&diff[start..end])
 }
 
+/// The diff section for the file at `path`, matched by any of the lines that can
+/// name it.
+///
+/// [`section`] only matches `diff --git a/<path> b/<path>`, which a rename (two
+/// different paths), a deletion (no new-side path) or a metadata-only section
+/// (no `---`/`+++` at all) does not contain. This matches the `--- a/`, `+++ b/`
+/// and `rename from`/`rename to` lines instead, so every shape has exactly one
+/// section that can be addressed without the parser's help.
+pub fn section_for<'a>(diff: &'a [u8], path: &str) -> Option<&'a [u8]> {
+    let needles = [
+        format!("diff --git a/{path} b/{path}"),
+        format!("--- a/{path}"),
+        format!("+++ b/{path}"),
+        format!("rename from {path}"),
+        format!("rename to {path}"),
+        format!("copy from {path}"),
+        format!("copy to {path}"),
+    ];
+    let starts: Vec<usize> = line_offsets(diff)
+        .iter()
+        .filter(|(_, line)| line.starts_with(b"diff --git "))
+        .map(|(offset, _)| *offset)
+        .collect();
+    for (index, start) in starts.iter().enumerate() {
+        let end = starts.get(index + 1).copied().unwrap_or(diff.len());
+        let section = &diff[*start..end];
+        if line_offsets(section).iter().any(|(_, line)| {
+            let line: &[u8] = line;
+            needles.iter().any(|needle| line == needle.as_bytes())
+        }) {
+            return Some(section);
+        }
+    }
+    None
+}
+
 pub fn is_hunk_header(line: &[u8]) -> bool {
     line.starts_with(b"@@ -")
 }
@@ -600,7 +636,18 @@ pub fn diff_sections(diff: &[u8]) -> Vec<&[u8]> {
 pub struct Reported {
     pub id: String,
     pub file: String,
+    /// Additions/deletions as the `(+A -D)` part of the listing header claims.
+    pub adds: usize,
+    pub dels: usize,
     pub lines: Vec<String>,
+}
+
+/// Parse the `(+A -D)` counts printed after the path in a `hunks` header.
+pub fn parse_counts(tail: &str) -> Option<(usize, usize)> {
+    let (_, counts) = tail.rsplit_once(" (+")?;
+    let counts = counts.strip_suffix(')')?;
+    let (adds, dels) = counts.split_once(" -")?;
+    Some((adds.parse().ok()?, dels.parse().ok()?))
 }
 
 /// Split `hunks` output into per-hunk records.
@@ -624,11 +671,17 @@ pub fn parse_hunks(output: &str, known: &[String]) -> Vec<Reported> {
                 .map(|path| (id.to_string(), path.clone()))
         });
         match header {
-            Some((id, file)) => hunks.push(Reported {
-                id,
-                file,
-                lines: Vec::new(),
-            }),
+            Some((id, file)) => {
+                let tail = line.split_once(' ').map(|(_, rest)| rest).unwrap_or("");
+                let (adds, dels) = parse_counts(tail).unwrap_or((0, 0));
+                hunks.push(Reported {
+                    id,
+                    file,
+                    adds,
+                    dels,
+                    lines: Vec::new(),
+                })
+            }
             None => {
                 if let Some(hunk) = hunks.last_mut()
                     && let Some((_, body)) = line.split_once(':')
@@ -717,4 +770,188 @@ pub fn oracle_patch(section: &[u8], exclude: usize) -> String {
         }
     }
     patch
+}
+
+/// The file header (`---`/`+++` lines) of a diff section, as `patch` wants it.
+pub fn file_header_lines(section: &[u8]) -> Vec<String> {
+    let text = std::str::from_utf8(section).expect("text section is valid UTF-8");
+    text.lines()
+        .take_while(|line| !line.starts_with("@@ "))
+        .filter(|line| line.starts_with("--- ") || line.starts_with("+++ "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The patch a correct implementation must print for exactly the `picked`-th
+/// `@@` blocks of `section`: jj's own file header, then those blocks verbatim.
+pub fn oracle_blocks_patch(section: &[u8], picked: &[usize]) -> String {
+    let mut patch = String::new();
+    for line in file_header_lines(section) {
+        patch.push_str(&line);
+        patch.push('\n');
+    }
+    for (index, (header, body)) in hunk_blocks(section).iter().enumerate() {
+        if !picked.contains(&index) {
+            continue;
+        }
+        patch.push_str(header);
+        patch.push('\n');
+        for line in body {
+            patch.push_str(line);
+            patch.push('\n');
+        }
+    }
+    patch
+}
+
+/// `(old_start, old_count, new_start, new_count)` from a `@@` header.
+pub fn parse_hunk_header(header: &str) -> (usize, usize, usize, usize) {
+    let mut parts = header
+        .trim_start_matches("@@ ")
+        .split(" @@")
+        .next()
+        .expect("header has a terminating @@")
+        .split_whitespace();
+    let old = parts.next().expect("old range");
+    let new = parts.next().expect("new range");
+    let range = |spec: &str| -> (usize, usize) {
+        let spec = &spec[1..];
+        match spec.split_once(',') {
+            Some((start, count)) => (
+                start.parse().expect("old start"),
+                count.parse().expect("count"),
+            ),
+            None => (spec.parse().expect("start"), 1),
+        }
+    };
+    let (old_start, old_count) = range(old);
+    let (new_start, new_count) = range(new);
+    (old_start, old_count, new_start, new_count)
+}
+
+/// The old-side and new-side lines a hunk body claims to cover.
+///
+/// `\ No newline at end of file` markers are metadata, not content lines.
+pub fn body_sides(body: &[String]) -> (Vec<String>, Vec<String>) {
+    let old = body
+        .iter()
+        .filter(|line| !line.starts_with('+') && !line.starts_with('\\'))
+        .map(|line| {
+            line.strip_prefix(' ')
+                .or_else(|| line.strip_prefix('-'))
+                .unwrap_or(line)
+                .to_string()
+        })
+        .collect();
+    let new = body
+        .iter()
+        .filter(|line| !line.starts_with('-') && !line.starts_with('\\'))
+        .map(|line| {
+            line.strip_prefix(' ')
+                .or_else(|| line.strip_prefix('+'))
+                .unwrap_or(line)
+                .to_string()
+        })
+        .collect();
+    (old, new)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Independent oracle: hunk ids
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// SHA-1, implemented here rather than taken from a crate so that the id oracle
+/// does not share code (or a dependency) with the implementation it checks.
+pub fn sha1(bytes: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    let mut message = bytes.to_vec();
+    let bit_len = (bytes.len() as u64).wrapping_mul(8);
+    message.push(0x80);
+    while message.len() % 64 != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in message.as_chunks::<64>().0 {
+        let mut w = [0u32; 80];
+        for (i, word) in chunk.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*word);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        for (i, word) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+
+    let mut out = [0u8; 20];
+    for (i, word) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    out
+}
+
+/// The id the tool must assign to a hunk with this display path and body,
+/// before collision suffixes: the first seven hex digits of the SHA-1 of the
+/// path followed by every body line and a newline.
+pub fn expected_raw_id(file: &str, body: &[String]) -> String {
+    let mut material = file.as_bytes().to_vec();
+    for line in body {
+        material.extend_from_slice(line.as_bytes());
+        material.push(b'\n');
+    }
+    let digest = sha1(&material);
+    digest[..4]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()[..7]
+        .to_string()
+}
+
+/// Assign ids the way the tool must: [`expected_raw_id`], with the second and
+/// later hunks that share a prefix suffixed `-2`, `-3`, … in listing order.
+pub fn expected_ids(hunks: &[(String, Vec<String>)]) -> Vec<String> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    hunks
+        .iter()
+        .map(|(file, body)| {
+            let raw = expected_raw_id(file, body);
+            let count = seen.entry(raw.clone()).or_insert(0);
+            *count += 1;
+            if *count == 1 {
+                raw
+            } else {
+                format!("{raw}-{count}")
+            }
+        })
+        .collect()
 }
