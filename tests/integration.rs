@@ -1683,6 +1683,39 @@ fn absorb_new_file_stays_in_working_copy() {
 }
 
 #[test]
+fn absorb_reports_new_files_as_new_files() {
+    // `absorb` decides a hunk is a new file by looking at the `--- /dev/null`
+    // side of its section. `parse_diff` strips the leading slash, so the value it
+    // stores is the bare `dev/null`; comparing against the `patch(1)` spelling
+    // `"/dev/null"` never matched, and the "new file" branch never ran: new files
+    // fell through to the annotation path, where `jj file annotate` on the parent
+    // revision cannot find them.
+    let repo = TestRepo::new();
+    repo.commit_file("existing.txt", "line1\nline2\nline3\n");
+    repo.write_file("existing.txt", "line1\nLINE2\nline3\n");
+    repo.write_file("brand_new.txt", "new file content\n");
+
+    let plan = repo.tool_ok(&["absorb", "--dry-run"]);
+    assert!(
+        plan.contains("brand_new.txt"),
+        "the new file should be reported as unmatched, got:\n{plan}"
+    );
+    assert!(
+        plan.contains("new file"),
+        "a hunk with an absent old side should be reported as a new file, \
+         not as an annotation failure, got:\n{plan}"
+    );
+    assert!(
+        !plan.contains("annotation"),
+        "no annotation should be attempted for a file the parent does not have, got:\n{plan}"
+    );
+    assert!(
+        plan.contains("existing.txt"),
+        "the change to the existing file should still be routed, got:\n{plan}"
+    );
+}
+
+#[test]
 fn absorb_pure_insertion_falls_back_to_file() {
     let repo = TestRepo::new();
     // Base file with content

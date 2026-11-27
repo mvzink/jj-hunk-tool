@@ -5,6 +5,17 @@ use std::process::Command;
 pub use git_surgeon::diff::{check_supported, parse_diff};
 pub use git_surgeon::hunk_id::assign_ids;
 
+/// Is this side of a diff section absent, i.e. a `--- /dev/null` (added file) or
+/// `+++ /dev/null` (deleted file) header?
+///
+/// `parse_diff` strips the leading slash, so the value it stores is the bare
+/// `dev/null`; this accepts both spellings so that a comparison against the
+/// `patch(1)` spelling cannot silently be dead code (which it was: `absorb`
+/// tested `== "/dev/null"`, so its new-file branch had never run).
+pub fn is_absent_side(path: &str) -> bool {
+    path == "dev/null" || path == "/dev/null"
+}
+
 /// Get the jj workspace root directory.
 pub fn get_repo_root() -> Result<std::path::PathBuf> {
     let output = Command::new("jj").args(["root", "--no-pager"]).output()?;
