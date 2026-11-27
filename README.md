@@ -121,10 +121,77 @@ The repo includes a comprehensive agent skill for working with jj in general as 
 npx skills add mvzink/jj-hunk-tool
 ```
 
+## Patch application
+
+Every `split`, `squash`, `diffedit`, `restore` and `absorb` selection — and the
+patch a `patch` command prints — is applied by **plain `git apply`**. GNU patch is
+no longer a runtime dependency: it is kept in the test suite as the strictness
+oracle.
+
+```sh
+git -c core.autocrlf=false apply -p1 --allow-empty --whitespace=nowarn [-R] -- <payload>
+```
+
+*jj apply, no repository.* `jj` drives the tool through its `--tool` protocol with
+two temporary directories outside the working copy — one holding the parent state,
+one to produce — so the payload is applied in a directory that has no `.git` and
+never gets one. `git apply` outside a working tree patches the paths it is given
+relative to the current directory and creates no index, no `.git` and no backup
+files, which means colocation is irrelevant here and neither `--index`, `--cached`
+nor `--3way` has anything to act on. `--allow-empty` keeps an empty payload the
+no-op the old applier treated it as; `--whitespace=nowarn` keeps a payload that
+adds trailing whitespace from printing warnings the old `patch --silent` never
+printed. `-c core.autocrlf=false` pins the bytes: the temp directories are outside
+any repository, so `git apply` reads the user's *global* config, and with
+`core.autocrlf=true` it would rewrite every applied line to CRLF. Neither flag
+relaxes a failure.
+
+*Why git apply.* It is atomic: a payload that does not apply leaves the directory
+as it was and reports git's own stderr, instead of GNU patch's interactive prompts
+on an unusual path and its `.orig`/`.rej` leftovers after a partial failure. If
+the `git` binary is missing the command fails with a message naming `git apply` and
+`PATH`, not a panic or a silent no-op.
+
+*Why GNU patch stays.* It is the stricter applier on the *shape* of a hunk and
+`git apply` is the looser one: `git apply` finds a hunk by content and accepts
+headers, counts and context shapes GNU patch rejects. A payload only one of the
+two can read is not one this tool should print, so the property suite applies every
+generated payload with both (`harness::apply_patch_to_copy_with_both`) and the
+integration suite pins the boundary and multi-hunk shapes against both
+(`file_boundary_hunks_apply_with_patch_and_git_apply`,
+`sliced_multi_hunk_selection_applies_cleanly_through_git_apply`). GNU patch is
+test-only: `cargo install` does not need it, and the test suite only needs it
+because it is the oracle.
+
+*The strictness we did not keep for free: the validator.* Because `git apply`
+accepts malformed hunks that GNU patch refuses, the payload is checked by the
+tool itself before any applier sees it. [`src/validate.rs`](src/validate.rs) is a
+pure function over the payload text, run inside `build_combined_patch` — the one
+choke point every payload goes through — and again when the `_jj-tool` protocol
+reads a payload back from disk. It rejects, naming the offending hunk:
+
+| rule | why |
+|---|---|
+| more than three context lines on a side | `jj` emits three and the builder never adds any; `git apply` does not care |
+| context unbalanced by more than one line | GNU patch reads it as a hunk anchored at a file boundary (issue #2); `git apply` does not care |
+| no context at all beside hunks that have some | context the generator dropped; `git apply` will not place it mid-file, GNU patch fuzzes over it |
+| a hunk with no changes at all | what a line range that covers no change line slices to; both appliers call it malformed |
+| `@@` counts that do not describe the body | `git apply` also rejects this as "corrupt patch", with no hunk named — and only after `_jj-tool` has begun |
+| a side with lines numbered `0` | same: an arithmetic error git calls corrupt, worth naming first |
+
+The ceiling is a *ceiling*, not a clamp: nothing trims surplus context, because
+surplus context cannot come from the generator in the first place. Balancing
+(`tool::balance_context`) is still the only transformation of `jj`'s bytes, and it
+keeps at least one line of context at a file boundary so both appliers can read the
+result without `--unidiff-zero`.
+
 ## Testing
 
 Unit tests are plain Rust; everything below that builds real repositories needs
-`jj` on `PATH`:
+`jj` on `PATH`, and every suite that applies a payload needs **both** `git` and
+GNU `patch` on `PATH` — `git` because it is the runtime applier, `patch` because
+it is the strictness oracle the payloads are held to (`patch` is a test
+dependency, not a runtime one; see [Patch application](#patch-application)).
 
 ```sh
 cargo nextest run                                   # everything, 32 Hegel cases per property
@@ -136,17 +203,23 @@ HEGEL_DEFAULT_PROFILE=soak cargo nextest run --test properties  # 2000-case soak
 
 `hegel.toml` sets the case counts per profile (`development` 32, `ci` 200,
 `soak` 2000). Measured on the 8-core reference box, wall clock for the whole
-suite: **30 s at 32 cases per property** and **2 min 58 s at 200** (nextest runs
+suite: **32 s at 32 cases per property** and **3 min 8 s at 200** (nextest runs
 the test binaries in parallel; per case a property costs one `jj git init`, one
 or two commits and a handful of tool invocations, so the dominant cost is
-subprocesses, not generation).
+subprocesses, not generation — 19 properties now, and the payload properties pay
+for a second applier per applied payload).
 
 The properties live in `tests/properties.rs` (non-UTF-8 diff handling, issue #1),
 `tests/properties_shapes.rs` (file/hunk shapes, line spans, ids, unusual paths)
 and `tests/properties_apply.rs` (selection, payload construction, every apply
 mode). Their oracles are independent of the implementation: `jj diff --git` bytes
 are re-parsed in the test, `hunks` output is re-parsed as text, and expected file
-contents come from applying a hand-built patch with `git apply`.
+contents come from applying a hand-built patch with `git apply` — and, wherever
+the drawn case is one GNU patch can read at all (no space in the path, no CRLF),
+with GNU patch as well, requiring the two to agree
+(`harness::apply_patch_to_copy_with_both`). The properties also assert that every
+payload they generate passes the tool's own validator
+(`every_generated_payload_passes_the_validator`).
 
 ## Coverage markers
 
@@ -207,10 +280,13 @@ landed with the two incidental defects, so the marker is now part of `REQUIRED`.
 | `apply/patch_only` | `main`, `patch` command | the read-only payload path |
 | `apply/split`, `apply/split_parallel`, `apply/squash`, `apply/diffedit`, `apply/restore` | `main`, one per command | each apply mode was invoked |
 | `apply/absorb_dry_run`, `apply/absorb_execute` | `tool::absorb_hunks` | absorb planned, then wrote |
-| `apply/jj_tool`, `apply/jj_tool_reverse` | `tool::jj_tool_apply` | the `--tool` protocol applied a payload, forward and reverse |
+| `apply/jj_tool`, `apply/jj_tool_reverse` | `tool::jj_tool_apply` | the `--tool` protocol applied a payload with `git apply`, forward and reverse |
 | `absorb/matched_change`, `absorb/matched_file`, `absorb/ambiguous`, `absorb/no_overlap` | `tool::absorb_hunks` routing | each reachable routing decision |
 | `absorb/new_file` | `tool::absorb_hunks`, new-file branch | a hunk whose old side is absent — a new file — is routed to no candidate |
-| `error/hunk_not_found`, `error/unsupported_metadata`, `error/no_hunks_selected`, `error/invalid_range_start`/`…_end`/`…_line_number`, `error/range_bounds`, `error/jj_command_failed`, `error/patch_apply_failed`, `error/missing_patch_env` | every bail/callback site | each user-reachable failure path |
+| `validate/accepted` | `validate::validate_patch`, success | a generated payload passed the generator-side validator |
+| `error/payload_shape`, `error/payload_context_ceiling`, `error/payload_context_imbalance`, `error/payload_zero_context`, `error/payload_no_changes` | `validate::validate_patch`, one per rule | each validator rule can fail loudly, naming the offending hunk |
+| `error/payload_no_newline_marker` | `validate::validate_patch` | **not required**: only a hand-written payload can put a `\ No newline` marker where it annotates nothing |
+| `error/hunk_not_found`, `error/unsupported_metadata`, `error/no_hunks_selected`, `error/invalid_range_start`/`…_end`/`…_line_number`, `error/range_bounds`, `error/jj_command_failed`, `error/patch_apply_failed`, `error/patch_applier_missing`, `error/missing_patch_env` | every bail/callback site | each user-reachable failure path, including a missing `git` binary |
 | `offset/header_ranges_fallback`, `offset/old_range_unparsed` | `tool::parse_header_ranges`, `tool::absorb_hunks` | **not required**: defensive fallbacks for a malformed `@@` header, which `jj` never emits |
 
 ## Disclaimer

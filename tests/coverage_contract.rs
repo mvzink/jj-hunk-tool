@@ -184,7 +184,18 @@ fn shapes(markers: &mut Markers) {
     let good = ids_for(&repo, "mod.txt");
     assert_eq!(good.len(), 1);
     markers.add(&repo.tool_ok(&["patch", &good[0]]));
-    markers.add(&repo.tool_ok(&["patch", &format!("{}:1-2", good[0])]));
+    // A line range that includes the change is a real payload.
+    markers.add(&repo.tool_ok(&["patch", &format!("{}:3-5", good[0])]));
+    // A range that covers only context lines slices to an all-context hunk,
+    // which no applier accepts: the validator refuses it instead of printing a
+    // patch that cannot be applied.
+    let empty_range = repo.tool(&["patch", &format!("{}:1-2", good[0])]);
+    markers.add(&empty_range);
+    assert!(
+        !empty_range.success && empty_range.stderr.contains("no changes in the hunk"),
+        "a range with no change lines must be refused, got: {}",
+        empty_range.stderr
+    );
     markers.add(&repo.tool_ok(&["patch", &good[0], "--reverse"]));
 
     // Refusals: a rename and a mode change both carry metadata a `@@` block
@@ -381,7 +392,7 @@ fn tool_protocol(markers: &mut Markers) {
     let patch = scratch.path().join("payload.diff");
     std::fs::write(
         &patch,
-        b"--- a/p.txt\n+++ b/p.txt\n@@ -2,1 +2,1 @@\n-two\n+TWO\n",
+        b"--- a/p.txt\n+++ b/p.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n",
     )
     .expect("patch file");
 
@@ -453,6 +464,24 @@ fn tool_protocol(markers: &mut Markers) {
         failed.stderr
     );
 
+    // No `git` on PATH at all: the applier is a runtime dependency, so a
+    // missing binary must be reported, not panicked over or silently skipped.
+    let empty_path = scratch.path().join("empty-path");
+    std::fs::create_dir_all(&empty_path).expect("empty PATH dir");
+    let no_git = repo.tool_env(
+        &["_jj-tool", left.to_str().unwrap(), right.to_str().unwrap()],
+        &[
+            ("JJ_HUNK_TOOL_PATCH", patch.to_str().unwrap()),
+            ("PATH", empty_path.to_str().unwrap()),
+        ],
+    );
+    markers.add(&no_git);
+    assert!(
+        !no_git.success && no_git.stderr.contains("no `git` executable found"),
+        "a missing git binary must name itself: {}",
+        no_git.stderr
+    );
+
     // No payload configured at all.
     let unset = repo.tool(&["_jj-tool", left.to_str().unwrap(), right.to_str().unwrap()]);
     markers.add(&unset);
@@ -461,6 +490,68 @@ fn tool_protocol(markers: &mut Markers) {
         "a missing payload must name the environment variable: {}",
         unset.stderr
     );
+}
+
+/// The payload validator's rejection rules, driven in-process. Each shape here is
+/// one an applier would accept and mis-read, or reject without naming the hunk,
+/// and each must fail loudly and name it.
+fn payload_validation(markers: &mut Markers) {
+    fn section(header: &str, body: &[&str]) -> String {
+        let mut patch = String::from("--- a/v.txt\n+++ b/v.txt\n");
+        patch.push_str(header);
+        patch.push('\n');
+        for line in body {
+            patch.push_str(line);
+            patch.push('\n');
+        }
+        patch
+    }
+
+    let cases: &[(&str, String)] = &[
+        // Header counts that do not describe the body.
+        (
+            "header claims",
+            section("@@ -1,3 +1,3 @@", &[" a", "-b", "+B"]),
+        ),
+        // More than three context lines on one side.
+        (
+            "context line(s) before",
+            section(
+                "@@ -1,6 +1,6 @@",
+                &[" a", " b", " c", " d", "-e", "+E", " f"],
+            ),
+        ),
+        // Uneven context: the shape GNU patch reads as a boundary anchor.
+        (
+            "context line(s) before the changes and 1 after",
+            section("@@ -1,5 +1,5 @@", &[" a", " b", " c", "-d", "+D", " e"]),
+        ),
+        // A hunk with no context beside a hunk of the same file that has some.
+        ("no context lines at all", {
+            let mut patch = section("@@ -2,3 +2,3 @@", &[" a", "-b", "+B", " c"]);
+            patch.push_str("--- a/v.txt\n+++ b/v.txt\n@@ -20,1 +20,1 @@\n-x\n+X\n");
+            patch
+        }),
+        // A block that changes nothing.
+        (
+            "no changes in the hunk",
+            section("@@ -2,3 +2,3 @@", &[" one", " two", " three"]),
+        ),
+    ];
+    for (expected, patch) in cases {
+        let error = jj_hunk_tool::validate::validate_patch(patch)
+            .expect_err("the validator must reject this shape")
+            .to_string();
+        assert!(
+            error.contains(expected),
+            "expected an error containing {expected:?}, got: {error}"
+        );
+    }
+
+    // And a well-formed payload passes, in-process, hitting the accept marker.
+    jj_hunk_tool::validate::validate_patch(&section("@@ -1,3 +1,3 @@", &[" a", "-b", "+B", " c"]))
+        .expect("a balanced hunk with context is valid");
+    markers.add_names(&markers::hit_names());
 }
 
 /// Every error path a user can reach.
@@ -549,6 +640,7 @@ fn required_markers_are_all_exercised() {
     apply_modes(&mut markers);
     absorb(&mut markers);
     tool_protocol(&mut markers);
+    payload_validation(&mut markers);
     errors(&mut markers);
 
     // A repository with no changes anywhere: nothing to identify.

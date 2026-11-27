@@ -73,8 +73,10 @@ jobs:
 
       - name: Check the external commands the tests spawn
         # The property tests run `jj git init` (a *colocated* repo, so the git
-        # binary is invoked) and the tool shells out to `patch -p1` for every
-        # selection, so all three must exist on the runner.
+        # binary is invoked), the tool applies every selection with plain
+        # `git apply` (no repository needed) and the suite holds each generated
+        # payload to GNU patch 2.8 as well, which is a test-only oracle now. So
+        # `git` and `patch` must both exist on the runner, alongside jj.
         run: |
           jj --version
           git --version
