@@ -218,13 +218,24 @@ fn mutated_last(bytes: &Bytes, replacement: &str) -> Bytes {
     Bytes(out.into_bytes())
 }
 
+/// A case always carries *every* shape, in a drawn order, with drawn content.
+///
+/// Drawing only some shapes per case would make the shape coverage of the suite a
+/// property of the random sample: a generator change that stopped producing
+/// renames would shrink the suite silently, because each case only asserts the
+/// markers of the shapes it happened to draw. Carrying the whole catalogue in
+/// every case makes the marker requirement absolute (see
+/// [`ALL_SHAPE_MARKERS`]) while the content, sizes and paths stay generated.
 #[hegel::composite]
 fn shape_case(tc: &TestCase) -> ShapeCase {
-    let shapes: Vec<Shape> = tc.draw(
-        gs::vecs(gs::sampled_from(Shape::ALL.to_vec()))
-            .min_size(1)
-            .max_size(4),
+    let mut shapes: Vec<Shape> = Shape::ALL.to_vec();
+    // A drawn order, so the diff's file order is not always the same.
+    let rotate: usize = tc.draw(
+        gs::integers::<usize>()
+            .min_value(0)
+            .max_value(shapes.len() - 1),
     );
+    shapes.rotate_left(rotate);
     let sizes: Vec<usize> = tc.draw(
         gs::vecs(gs::integers::<usize>().min_value(4).max_value(12))
             .min_size(shapes.len())
@@ -407,6 +418,27 @@ fn build_shape_repo(case: &ShapeCase) -> Repo {
     repo
 }
 
+/// Every identification marker the generated shapes must reach, whichever case
+/// was drawn. This is the requirement that fails when the catalogue loses a shape
+/// or the code stops identifying one.
+const ALL_SHAPE_MARKERS: &[&str] = &[
+    "parse/hunk_new_file",
+    "parse/hunk_deleted_file",
+    "parse/hunk_path_change",
+    "parse/hunk_additions_only",
+    "parse/hunk_deletions_only",
+    "parse/hunk_modified",
+    "parse/hunk_no_newline_marker",
+    "parse/unsupported_rename",
+    "parse/unsupported_mode_change",
+    "diff/section_decoded",
+    "diff/sections_multiple",
+    "patch/supported_hunk",
+    "patch/whole_hunk",
+    "patch/reverse",
+    "error/unsupported_metadata",
+];
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Properties
 // ──────────────────────────────────────────────────────────────────────────────
@@ -572,6 +604,26 @@ fn listing_matches_jj_for_every_file_shape(tc: TestCase) {
                     file.shape, file.display
                 );
             }
+            // The reverse payload must undo the hunk: applied to the head
+            // content it has to reproduce the base content. Only for shapes that
+            // have both sides as text.
+            if let (Some((_, base)), Some((_, head))) = (&file.base, &file.head)
+                && file.shape.compares_bodies()
+            {
+                let reversed = repo.tool_ok(&["patch", &id, "--reverse"]);
+                markers.add(&reversed);
+                // The payload keeps its `+`/`-` markers; it is reversed at apply
+                // time, exactly as `restore` does via `patch --reverse`.
+                let undone =
+                    apply_patch_reversed_to_copy(&file.display, head.as_slice(), &reversed.stdout);
+                assert_eq!(
+                    undone,
+                    base.as_slice(),
+                    "{:?} ({:?}): the reverse payload does not undo the hunk",
+                    file.shape,
+                    file.display
+                );
+            }
         } else {
             assert!(
                 !patched.success,
@@ -600,10 +652,9 @@ fn listing_matches_jj_for_every_file_shape(tc: TestCase) {
         }
     }
 
-    markers.require(&["diff/section_decoded"], "listing a decodable diff");
-    if case.files.len() > 1 {
-        markers.require(&["diff/sections_multiple"], "listing a multi-file diff");
-    }
+    // The absolute requirement: every generated shape was identified as that
+    // shape, regardless of which case this was.
+    markers.require(ALL_SHAPE_MARKERS, "identifying every generated shape");
 }
 
 /// Property — every hunk header describes the lines the hunk actually covers.
