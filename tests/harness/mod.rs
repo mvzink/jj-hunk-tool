@@ -56,6 +56,15 @@ impl Markers {
         self
     }
 
+    /// Add marker names observed outside a tool run (for example by driving
+    /// the library in-process).
+    pub fn add_names(&mut self, names: &[&str]) -> &mut Self {
+        for name in names {
+            self.0.insert((*name).to_string());
+        }
+        self
+    }
+
     pub fn names(&self) -> Vec<String> {
         self.0.iter().cloned().collect()
     }
@@ -168,8 +177,56 @@ impl Repo {
         output.stdout
     }
 
+    /// Run a `jj` command that is *expected* to fail, returning its stdout and
+    /// stderr rather than asserting success.
+    pub fn jj_try(&self, args: &[&str]) -> (bool, Vec<u8>, String) {
+        let output = Command::new("jj")
+            .args(args)
+            .arg("--no-pager")
+            .current_dir(self.path())
+            .env("JJ_CONFIG", "")
+            .env("EDITOR", "true")
+            .output()
+            .expect("run jj");
+        (
+            output.status.success(),
+            output.stdout,
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
+    /// Set a repository-scoped `jj` config value (`jj config set --repo`).
+    ///
+    /// Used to make a commit immutable (`immutable_heads()`), which is the only
+    /// way to reach absorb's "nothing mutable overlaps this hunk" branch.
+    pub fn jj_config_repo(&self, key: &str, value: &str) {
+        let output = Command::new("jj")
+            .args(["config", "set", "--repo", key, value])
+            .current_dir(self.path())
+            .env("JJ_CONFIG", "")
+            .env("EDITOR", "true")
+            .output()
+            .expect("run jj config set");
+        assert!(
+            output.status.success(),
+            "jj config set --repo {key} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     pub fn tool(&self, args: &[&str]) -> ToolRun {
-        let output = Command::new(&self.binary)
+        self.tool_env(args, &[])
+    }
+
+    /// Run the tool with extra environment variables, still collecting coverage
+    /// markers. Needed for the internal `_jj-tool` protocol, which is configured
+    /// entirely through the environment.
+    pub fn tool_env(&self, args: &[&str], env: &[(&str, &str)]) -> ToolRun {
+        let mut command = Command::new(&self.binary);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let output = command
             .args(args)
             .current_dir(self.path())
             .env("JJ_CONFIG", "")
@@ -762,6 +819,43 @@ pub fn apply_patch_to_copy(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> 
     assert!(
         apply.status.success(),
         "git apply rejected the patch for {rel}: {}\n--- patch ---\n{patch_text}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+    std::fs::read(&target).expect("read patched file")
+}
+
+/// [`apply_patch_to_copy`], applied backwards (`git apply -R`).
+///
+/// `jj-hunk-tool patch --reverse` builds a *reverse-aware* payload: it keeps the
+/// hunk's `+`/`-` markers and changes which side an unselected line falls back to,
+/// exactly like `restore` does when it hands the payload to `patch --reverse`.
+/// The consumer of such a payload therefore reverses it at apply time, which is
+/// what this helper does. (The pre-existing integration test
+/// `patch_reverse_whole_hunk` pins the same semantics.)
+pub fn apply_patch_reversed_to_copy(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> {
+    let scratch = tempfile::tempdir().expect("create scratch dir");
+    let target = scratch.path().join(rel);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).expect("create scratch parent");
+    }
+    std::fs::write(&target, base).expect("write scratch base");
+    let patch_file = scratch.path().join(".hegel-patch.diff");
+    std::fs::write(&patch_file, patch_text).expect("write patch file");
+    let init = Command::new("git")
+        .args(["init", "--quiet", "."])
+        .current_dir(scratch.path())
+        .output()
+        .expect("run git init");
+    assert!(init.status.success(), "git init failed in scratch dir");
+    let apply = Command::new("git")
+        .args(["apply", "-R", "-p1"])
+        .arg(&patch_file)
+        .current_dir(scratch.path())
+        .output()
+        .expect("run git apply -R");
+    assert!(
+        apply.status.success(),
+        "git apply -R rejected the reverse patch for {rel}: {}\n--- patch ---\n{patch_text}",
         String::from_utf8_lossy(&apply.stderr)
     );
     std::fs::read(&target).expect("read patched file")
