@@ -613,7 +613,7 @@ fn listing_matches_jj_for_every_file_shape(tc: TestCase) {
                 let reversed = repo.tool_ok(&["patch", &id, "--reverse"]);
                 markers.add(&reversed);
                 // The payload keeps its `+`/`-` markers; it is reversed at apply
-                // time, exactly as `restore` does via `patch --reverse`.
+                // time, exactly as `restore` does via `git apply -R`.
                 let undone =
                     apply_patch_reversed_to_copy(&file.display, head.as_slice(), &reversed.stdout);
                 assert_eq!(
