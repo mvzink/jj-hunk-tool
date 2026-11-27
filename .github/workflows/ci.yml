@@ -88,7 +88,13 @@ jobs:
 
       - name: Test
         # Nextest's default parallelism is fine: the property tests are
-        # subprocess-bound and measured at ~3.1 of 8 cores. The case count comes
-        # from the `ci` profile (200 per property, 6 properties); nothing here
-        # overrides it, so raising it for a one-off is HEGEL_TEST_CASES=... locally.
+        # subprocess-bound. The case count comes from the `ci` profile (200 per
+        # property, 18 properties); nothing here overrides it, so raising it for a
+        # one-off is HEGEL_TEST_CASES=... locally.
+        #
+        # Runtime: ~3 minutes on the 8-core reference box, ~45 s when the suite was
+        # six properties. That is still cheap for every push, and the 200 cases are
+        # what catch the interesting shapes, so `ci` stays at 200; a scheduled
+        # `soak` run (2000 cases, `HEGEL_DEFAULT_PROFILE=soak`) is where depth
+        # beyond that belongs. The job timeout is 20 minutes.
         run: cargo nextest run
