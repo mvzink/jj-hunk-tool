@@ -375,7 +375,7 @@ pub fn absorb_hunks(
     let unique_files: Vec<String> = {
         let mut files = std::collections::HashSet::new();
         for (_, hunk) in selected {
-            if hunk.old_file != "/dev/null" {
+            if !diff::is_absent_side(&hunk.old_file) {
                 files.insert(hunk.file.clone());
             }
         }
@@ -466,8 +466,9 @@ pub fn absorb_hunks(
         let deletions = hunk.lines.iter().filter(|l| l.starts_with('-')).count();
         let fingerprint = HunkFingerprint::from_hunk(hunk);
 
-        // New files can't be annotated
-        if hunk.old_file == "/dev/null" {
+        // New files can't be annotated: nothing in the parent could have
+        // introduced a line of a file the parent does not have.
+        if crate::diff::is_absent_side(&hunk.old_file) {
             routings.push((
                 HunkRouting {
                     hunk_id: id.clone(),
@@ -579,7 +580,7 @@ pub fn absorb_hunks(
             (Some(target), vec![], "matched")
         } else if ancestor_hits.is_empty() {
             // Fallback: find the most recent mutable ancestor that touched this file
-            if hunk.old_file != "/dev/null" {
+            if !crate::diff::is_absent_side(&hunk.old_file) {
                 match file_ancestors_cache.get(&hunk.file) {
                     Some(file_ancestors) if !file_ancestors.is_empty() => {
                         let target = file_ancestors[0].clone();
