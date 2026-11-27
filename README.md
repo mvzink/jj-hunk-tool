@@ -121,6 +121,99 @@ The repo includes a comprehensive agent skill for working with jj in general as 
 npx skills add mvzink/jj-hunk-tool
 ```
 
+## Testing
+
+Unit tests are plain Rust; everything below that builds real repositories needs
+`jj` on `PATH`:
+
+```sh
+cargo nextest run                                   # everything, 32 Hegel cases per property
+cargo nextest run --test coverage_contract          # the coverage-marker contract
+HEGEL_TEST_CASES=200 cargo nextest run --test properties \
+    --test properties_shapes --test properties_apply  # the CI profile
+HEGEL_DEFAULT_PROFILE=soak cargo nextest run --test properties  # 2000-case soak
+```
+
+`hegel.toml` sets the case counts per profile (`development` 32, `ci` 200,
+`soak` 2000). Measured on the 8-core reference box, wall clock for the whole
+suite: **30 s at 32 cases per property** and **2 min 58 s at 200** (nextest runs
+the test binaries in parallel; per case a property costs one `jj git init`, one
+or two commits and a handful of tool invocations, so the dominant cost is
+subprocesses, not generation).
+
+The properties live in `tests/properties.rs` (non-UTF-8 diff handling, issue #1),
+`tests/properties_shapes.rs` (file/hunk shapes, line spans, ids, unusual paths)
+and `tests/properties_apply.rs` (selection, payload construction, every apply
+mode). Their oracles are independent of the implementation: `jj diff --git` bytes
+are re-parsed in the test, `hunks` output is re-parsed as text, and expected file
+contents come from applying a hand-built patch with `git apply`.
+
+## Coverage markers
+
+The suite asserts *reachability*, not just outcomes: a test that claims to cover
+rename-shaped diffs fails if no rename ever reached the parser, and an apply mode
+that stops calling a helper fails instead of passing quietly. The facility lives
+in [`src/markers.rs`](src/markers.rs) and is always compiled — no `cfg(test)`, no
+feature flag, no dependency.
+
+- `Marker` is a closed set of namespaced names (`parse/hunk_path_change`,
+  `apply/restore`, …), declared in one `marker_set!` table.
+- `hit!(Marker)` records one reached path. It is a single relaxed atomic store:
+  no allocation, no lock, and near-free on hot paths.
+- `markers::REQUIRED` is the contract: the markers the suite promises to reach.
+- `markers::assert_required_hit` / the harness's `Markers::require` fail loudly,
+  naming every missing marker.
+- `JJ_HUNK_TOOL_MARKERS=1` makes the binary print its hit set to stderr on exit
+  (success and failure alike), which is how integration tests observe a
+  subprocess. Unset, the cost is one `getenv` at exit.
+
+Adding a marker is a two-place edit in `src/markers.rs`: append
+`Variant => "area/name",` to the `marker_set!` table (the enum, `ALL`, `name()`
+and the hit array are generated), and — only if a deterministic test reaches it —
+add `Marker::Variant` to `REQUIRED`. Declaring without requiring is allowed and
+useful; requiring is a promise, and `tests/coverage_contract.rs` holds the suite
+to it.
+
+The contract itself is `tests/coverage_contract.rs`: one deterministic run that
+drives every required marker (including the absorb branches that need an
+immutable ancestor, the `_jj-tool` protocol driven directly, and every error
+path) and asserts `REQUIRED ⊆ hit`. Two markers describe diff shapes `jj` cannot
+emit (`copy from`/`copy to`, `similarity index`); they are reached in-process
+through the same library entry point the binary uses.
+
+One further marker is placed but not required: `absorb/new_file` sits on a branch
+that cannot be taken while `absorb` compares the absent side against `"/dev/null"`
+instead of the `dev/null` the parser stores. It is on the same footing as the two
+`offset/*` fallbacks above — a marker kept for the code it guards, deliberately
+outside the contract until the code can reach it.
+
+| marker | where it is placed | what it proves |
+|---|---|---|
+| `diff/section_decoded` | `diff::decode_diff`, accepted section | a decodable file section reached the parser |
+| `diff/section_undecodable_skipped` | `diff::decode_diff`, rejected section | a non-UTF-8 section was skipped, not decoded |
+| `diff/sections_multiple` | `diff::decode_diff` | a diff with more than one file section |
+| `parse/no_hunks` | `markers::observe_hunks`, empty diff | the no-change path |
+| `parse/hunk_modified` | `observe_hunks` | a hunk with both `+` and `-` lines |
+| `parse/hunk_additions_only` | `observe_hunks` | a pure-insertion hunk |
+| `parse/hunk_deletions_only` | `observe_hunks` | a pure-deletion hunk |
+| `parse/hunk_new_file` | `observe_hunks` | a `--- /dev/null` hunk |
+| `parse/hunk_deleted_file` | `observe_hunks` | a `+++ /dev/null` hunk |
+| `parse/hunk_path_change` | `observe_hunks` | a hunk whose old and new paths differ |
+| `parse/hunk_no_newline_marker` | `observe_hunks` | a hunk carrying `\ No newline at end of file` |
+| `parse/duplicate_id_suffix` | `observe_hunks` | two hunks hashed to the same id prefix |
+| `parse/unsupported_rename` / `…_copy` / `…_mode_change` / `…_similarity` | `observe_hunks` | metadata a hunk-level operation cannot reproduce |
+| `select/*` (8 markers) | `markers::observe_selection` | every selection shape: none, all, single, subset, interleaved, first, last, line ranges |
+| `patch/whole_hunk`, `patch/reverse` | `tool::build_combined_patch` | the two payload branches |
+| `patch/supported_hunk` | `diff::require_supported`, success | a hunk that can be moved |
+| `apply/patch_only` | `main`, `patch` command | the read-only payload path |
+| `apply/split`, `apply/split_parallel`, `apply/squash`, `apply/diffedit`, `apply/restore` | `main`, one per command | each apply mode was invoked |
+| `apply/absorb_dry_run`, `apply/absorb_execute` | `tool::absorb_hunks` | absorb planned, then wrote |
+| `apply/jj_tool`, `apply/jj_tool_reverse` | `tool::jj_tool_apply` | the `--tool` protocol applied a payload, forward and reverse |
+| `absorb/matched_change`, `absorb/matched_file`, `absorb/ambiguous`, `absorb/no_overlap` | `tool::absorb_hunks` routing | each reachable routing decision |
+| `absorb/new_file` | `tool::absorb_hunks`, new-file branch | **not required yet**: that branch compares `old_file` against `"/dev/null"` while the parser stores `dev/null`, so it never runs; it joins `REQUIRED` once that comparison is fixed |
+| `error/hunk_not_found`, `error/unsupported_metadata`, `error/no_hunks_selected`, `error/invalid_range_start`/`…_end`/`…_line_number`, `error/range_bounds`, `error/jj_command_failed`, `error/patch_apply_failed`, `error/missing_patch_env` | every bail/callback site | each user-reachable failure path |
+| `offset/header_ranges_fallback`, `offset/old_range_unparsed` | `tool::parse_header_ranges`, `tool::absorb_hunks` | **not required**: defensive fallbacks for a malformed `@@` header, which `jj` never emits |
+
 ## Disclaimer
 
 This is a vibe-coded project. It will eat your dog's homework.
