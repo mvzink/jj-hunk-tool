@@ -581,7 +581,8 @@ fn selected_hunks_apply_like_a_hand_built_patch(tc: TestCase) {
         .collect();
     assert!(!selected_ids.is_empty());
 
-    let expected = apply_patch_to_copy(&primary_path, &base, &oracle_patch(section, excluded));
+    let expected =
+        apply_patch_to_copy_with_both(&primary_path, &base, &oracle_patch(section, excluded));
     assert_ne!(&expected, &base, "hand-built patch changed nothing");
     assert_ne!(&expected, &head, "hand-built patch applied every hunk");
 
@@ -593,7 +594,7 @@ fn selected_hunks_apply_like_a_hand_built_patch(tc: TestCase) {
         "patch: {}",
         tool_patch.stderr
     );
-    let applied = apply_patch_to_copy(&primary_path, &base, &tool_patch.stdout);
+    let applied = apply_patch_to_copy_with_both(&primary_path, &base, &tool_patch.stdout);
     assert_eq!(
         &applied, &expected,
         "patch output does not match an independently built patch for the same hunks"

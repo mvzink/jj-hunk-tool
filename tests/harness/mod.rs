@@ -3,8 +3,9 @@
 //! Everything here is deliberately independent of the implementation under
 //! test: `jj diff --git` output is re-parsed from raw bytes, the tool's own
 //! `hunks` output is re-parsed as text, and expected file contents are produced
-//! by applying a hand-built patch with `patch(1)`. A test that used the tool's
-//! parser to check the tool's parser would prove nothing.
+//! by applying a hand-built patch with `git apply` (and, for patch-safe cases, GNU
+//! patch as well). A test that used the tool's parser to check the tool's parser
+//! would prove nothing.
 
 // This module is compiled into every property test binary, and each one uses a
 // different subset of it.
@@ -324,7 +325,7 @@ pub struct FileSpec {
 pub struct Case {
     pub files: Vec<FileSpec>,
     /// Plain-text file that provably changes and whose path is safe for
-    /// `patch -p1` (no spaces), so mutation properties can select its hunks.
+    /// both appliers (no spaces), so mutation properties can select its hunks.
     pub text: String,
     /// The non-UTF-8 file that is *added*, so its content must appear in the
     /// diff body. Properties assert on this file's own section: see
@@ -379,7 +380,7 @@ pub fn eol(crlf: bool) -> &'static str {
 /// `allow_crlf` exists because CRLF content currently trips a *different*,
 /// pre-existing bug: `git-surgeon`'s parser splits the diff with `str::lines()`,
 /// which strips the `\r`, so a hunk for a CRLF file is regenerated without its
-/// carriage returns and `patch -p1` refuses it ("different line endings"). That
+/// carriage returns and GNU patch refuses it ("different line endings"). That
 /// affects `hunks` output, `patch` and every selection command equally on the
 /// pre-fix and post-fix code, so the mutation properties below use LF-only text
 /// and keep CRLF for the read-only properties, where listing still works.
@@ -462,8 +463,9 @@ pub fn arbitrary_lf_text_content(tc: &TestCase) -> Bytes {
     }
 }
 
-/// A path with no spaces, safe to feed to `patch -p1` (which the tool shells
-/// out to). May still be non-ASCII or live in a subdirectory.
+/// A path with no spaces, safe to feed to both appliers (GNU patch, the oracle,
+/// cannot open a path containing a space). May still be non-ASCII or live in a
+/// subdirectory.
 #[hegel::composite]
 pub fn plain_path(tc: &TestCase) -> String {
     let dir = if tc.draw(gs::booleans()) { "dír/" } else { "" };
@@ -772,36 +774,25 @@ pub fn hunks_for(paths: &[String], output: &str) -> Vec<String> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// patch(1) helper for the round-trip property
+// patch appliers: the runtime one and the strictness oracle
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Apply `patch_text` to a scratch copy of `base` and return the resulting
-/// bytes of `rel`.
+/// Write `base` at `rel` in a fresh scratch directory, write `patch_text` beside
+/// it and hand both to `command`, then return the resulting bytes of `rel`.
 ///
-/// Applies the payload with `git apply`, which never fuzzes: a hunk whose
-/// context does not match line for line, whose header counts do not describe its
-/// body, or whose file header is wrong is rejected. That is the strictness the
-/// oracle needs.
-///
-/// `patch(1)` — the applier the tool's own `_jj-tool` path runs — is deliberately
-/// not the oracle here. Slicing a hunk turns unselected removals into context, so
-/// a payload can end up with more context on one side of its changes than the
-/// other; GNU patch reads unbalanced context as "this hunk is anchored at the
-/// start or end of the file" and rejects the payload anywhere else, which is why
-/// the payload builder balances context before emitting (upstream issue #2).
-/// `-F 0` does not help, because that heuristic is not fuzz. `git apply` locates
-/// hunks by content alone, which is exactly the property under test, so the
-/// payloads are applied here and the tool's own applier is exercised by the
-/// integration suite instead.
-///
-/// Balancing trims the longer side down to the shorter one but never below one
-/// line, so a payload always carries at least one line of context even when the
-/// change sits on the first or last line of its file. That floor is why plain
-/// `git apply` is the oracle here and no `--unidiff-zero` is needed: a
-/// zero-context hunk would be accepted by GNU patch and rejected by `git apply`,
-/// and a payload that only one of the two appliers can read is not one this tool
-/// should print.
-pub fn apply_patch_to_copy(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> {
+/// No repository is created and none is needed: `git apply` outside a working
+/// tree patches the paths it is given relative to the current directory, which is
+/// exactly how the tool's own `_jj-tool` path runs it (jj hands that protocol two
+/// repo-less temp directories). A helper that ran `git init` first would test a
+/// different code path from the one the tool uses.
+fn apply_in_scratch(
+    rel: &str,
+    base: &[u8],
+    patch_text: &str,
+    applier: &str,
+    command: Command,
+    rejected: &str,
+) -> Vec<u8> {
     let scratch = tempfile::tempdir().expect("create scratch dir");
     let target = scratch.path().join(rel);
     if let Some(parent) = target.parent() {
@@ -811,25 +802,96 @@ pub fn apply_patch_to_copy(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> 
     let patch_file = scratch.path().join(".hegel-patch.diff");
     std::fs::write(&patch_file, patch_text).expect("write patch file");
 
-    let init = Command::new("git")
-        .args(["init", "--quiet", "."])
-        .current_dir(scratch.path())
-        .output()
-        .expect("run git init");
-    assert!(init.status.success(), "git init failed in scratch dir");
-
-    let apply = Command::new("git")
-        .args(["apply", "-p1"])
+    let mut command = command;
+    let output = command
         .arg(&patch_file)
         .current_dir(scratch.path())
         .output()
-        .expect("run git apply");
+        .unwrap_or_else(|error| panic!("could not run {applier}: {error}"));
     assert!(
-        apply.status.success(),
-        "git apply rejected the patch for {rel}: {}\n--- patch ---\n{patch_text}",
-        String::from_utf8_lossy(&apply.stderr)
+        output.status.success(),
+        "{rejected} ({applier}) for {rel}: {}\n--- patch ---\n{patch_text}",
+        String::from_utf8_lossy(&output.stderr)
     );
     std::fs::read(&target).expect("read patched file")
+}
+
+/// Apply `patch_text` to a scratch copy of `base` with plain `git apply` and
+/// return the resulting bytes of `rel`.
+///
+/// This is the applier the tool now runs (`tool::jj_tool_apply`), so the
+/// property suite applies payloads exactly the way the tool does: no repository,
+/// no `--unidiff-zero`, no fuzz. `git apply` locates a hunk by content, so it
+/// pins the property under test (the payload means what it says) without
+/// GNU patch's positional heuristics.
+pub fn apply_patch_to_copy(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> {
+    apply_in_scratch(
+        rel,
+        base,
+        patch_text,
+        "git apply",
+        {
+            let mut command = Command::new("git");
+            command.args(["apply", "-p1"]);
+            command
+        },
+        "git apply rejected the patch",
+    )
+}
+
+/// The same payload applied with GNU patch 2.8, its strictness oracle.
+///
+/// GNU patch is no longer a runtime dependency: it is retained in the test suite
+/// because it is stricter than `git apply` about the *shape* of a hunk and the
+/// two therefore disagree on exactly the malformations that matter. A payload
+/// only one of them can read is not one this tool should print.
+///
+/// Two of GNU patch's limits make it unusable as an oracle for *every* case, so
+/// the callers that use it draw patch-safe inputs: it cannot open a path
+/// containing a space (`tests/properties_shapes.rs` draws those, and uses
+/// [`apply_patch_to_copy`] alone), and it rejects a payload against a file whose
+/// lines end in CRLF because the parser drops the carriage returns before the
+/// hunk reaches it (the pre-existing bug documented on `text_content`).
+pub fn apply_patch_with_gnu_patch(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> {
+    apply_in_scratch(
+        rel,
+        base,
+        patch_text,
+        "GNU patch",
+        {
+            let mut command = Command::new("patch");
+            // `--batch` never asks a question (`patch(1)` prompts on a path it
+            // cannot find and would hang the suite), and
+            // `--no-backup-if-mismatch` keeps `.orig` files out of the scratch
+            // directory so the temp dir is the only record of the result.
+            command.args([
+                "-p1",
+                "--silent",
+                "--batch",
+                "--no-backup-if-mismatch",
+                "-i",
+            ]);
+            command
+        },
+        "GNU patch rejected the payload",
+    )
+}
+
+/// Apply the payload with **both** appliers and require them to agree.
+///
+/// The differential oracle: `git apply` is what the tool runs and GNU patch is
+/// what it used to run, and a payload that survives both is one that does not
+/// depend on either one's leniency. See [`apply_patch_with_gnu_patch`] for why
+/// callers must draw patch-safe inputs.
+pub fn apply_patch_to_copy_with_both(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> {
+    let from_git = apply_patch_to_copy(rel, base, patch_text);
+    let from_patch = apply_patch_with_gnu_patch(rel, base, patch_text);
+    assert_eq!(
+        from_git, from_patch,
+        "the two appliers disagree for {rel}: git apply and GNU patch accepted the \
+         payload but produced different bytes"
+    );
+    from_git
 }
 
 /// [`apply_patch_to_copy`], applied backwards (`git apply -R`).
@@ -841,32 +903,18 @@ pub fn apply_patch_to_copy(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> 
 /// what this helper does. (The pre-existing integration test
 /// `patch_reverse_whole_hunk` pins the same semantics.)
 pub fn apply_patch_reversed_to_copy(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> {
-    let scratch = tempfile::tempdir().expect("create scratch dir");
-    let target = scratch.path().join(rel);
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).expect("create scratch parent");
-    }
-    std::fs::write(&target, base).expect("write scratch base");
-    let patch_file = scratch.path().join(".hegel-patch.diff");
-    std::fs::write(&patch_file, patch_text).expect("write patch file");
-    let init = Command::new("git")
-        .args(["init", "--quiet", "."])
-        .current_dir(scratch.path())
-        .output()
-        .expect("run git init");
-    assert!(init.status.success(), "git init failed in scratch dir");
-    let apply = Command::new("git")
-        .args(["apply", "-R", "-p1"])
-        .arg(&patch_file)
-        .current_dir(scratch.path())
-        .output()
-        .expect("run git apply -R");
-    assert!(
-        apply.status.success(),
-        "git apply -R rejected the reverse patch for {rel}: {}\n--- patch ---\n{patch_text}",
-        String::from_utf8_lossy(&apply.stderr)
-    );
-    std::fs::read(&target).expect("read patched file")
+    apply_in_scratch(
+        rel,
+        base,
+        patch_text,
+        "git apply -R",
+        {
+            let mut command = Command::new("git");
+            command.args(["apply", "-R", "-p1"]);
+            command
+        },
+        "git apply -R rejected the reverse patch",
+    )
 }
 
 /// Build the patch for `section` minus the `exclude`-th hunk, by hand, from

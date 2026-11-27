@@ -4,11 +4,14 @@
 //! The shape of each case is a small text repository with one or two files and
 //! one to three hunks per file, far enough apart that they stay separate. All
 //! content is LF-only and all paths are ASCII with no spaces, because these
-//! properties apply payloads with `patch(1)`, which cannot open a path with a
-//! space in it and (see `tests/properties_shapes.rs`) does not survive CRLF for
-//! reasons unrelated to selection. The *payload* is still compared byte for byte
-//! with `jj`'s own `@@` blocks, whitespace included, after the context balancing
-//! the builder documents (`harness::balance_block` re-derives it from the rule).
+//! properties apply payloads with **both** appliers: `git apply`, which is what
+//! the tool now runs, and GNU patch 2.8, the strictness oracle. GNU patch cannot
+//! open a path with a space in it and (see `tests/properties_shapes.rs`) does not
+//! survive CRLF for reasons unrelated to selection, and a payload that only one
+//! of the two can read is not one the tool should print. The *payload* is still
+//! compared byte for byte with `jj`'s own `@@` blocks, whitespace included, after
+//! the context balancing the builder documents (`harness::balance_block`
+//! re-derives it from the rule).
 //!
 //! Every property states what it proves and which bug class it kills, and each
 //! asserts the coverage markers of the path it took.
@@ -289,12 +292,95 @@ fn payload_is_exactly_the_selected_hunks(tc: TestCase) {
     markers.require(&["select/no_hunks"], "an empty selection");
 }
 
+/// Property — every payload the generators produce passes the validator.
+///
+/// The validator is a pure function over the payload text (`validate`), run by
+/// `build_combined_patch` before any applier sees it. This property takes the
+/// payloads back out of the tool — whole-hunk selections, one-hunk-per-file
+/// selections, the whole selection at once, and line-range slices — and feeds
+/// each one to the validator again. It fails if a generator can emit a payload
+/// the validator would reject (so the canary is not merely never reached), and it
+/// pins the validator to the *printed* payload, not just to the builder's string:
+/// what reaches an applier is what was validated.
+///
+/// Kills: payload builders that start emitting shapes only one applier can read —
+/// unbalanced context, more than three context lines on a side, `@@` counts that
+/// do not describe the body, or a hunk with no context at all beside hunks that
+/// have it.
+#[hegel::test]
+fn every_generated_payload_passes_the_validator(tc: TestCase) {
+    let case = tc.draw(text_case());
+    tc.note(&format!("case = {case:#?}"));
+    let repo = build_text_repo(&case);
+    let paths = case.paths();
+
+    let mut markers = Markers::new();
+    let listed = repo.tool_ok(&["hunks"]);
+    markers.add(&listed);
+    let reported = parse_hunks(&listed.stdout, &paths);
+    assert!(!reported.is_empty());
+
+    // The whole selection at once: every hunk of every file, so the payload is a
+    // concatenation of sections — the shape that makes per-file rules and section
+    // boundaries matter.
+    let mut all_args = vec!["patch"];
+    all_args.extend(reported.iter().map(|hunk| hunk.id.as_str()));
+    let whole = repo.tool_ok(&all_args);
+    markers.add(&whole);
+    validate(&whole.stdout, "the whole selection");
+
+    for hunk in &reported {
+        // One hunk on its own.
+        let single = repo.tool_ok(&["patch", &hunk.id]);
+        markers.add(&single);
+        validate(&single.stdout, &format!("hunk {}", hunk.id));
+
+        // A line-range slice of it, over the span its change lines cover. The
+        // slice is what turns unselected removals into context, which is the
+        // shape the balance rule exists for.
+        let changes: Vec<usize> = hunk
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| !line.starts_with(' '))
+            .map(|(index, _)| index + 1)
+            .collect();
+        if changes.is_empty() {
+            continue;
+        }
+        let spec = format!("{}:{}-{}", hunk.id, changes[0], changes[changes.len() - 1]);
+        let sliced = repo.tool_ok(&["patch", &spec]);
+        markers.add(&sliced);
+        validate(&sliced.stdout, &spec);
+    }
+
+    markers.require(
+        &[
+            "validate/accepted",
+            "patch/whole_hunk",
+            "select/line_ranges",
+        ],
+        "validating generated payloads",
+    );
+}
+
+/// Assert `payload` passes the generator-side validator, naming the case.
+#[track_caller]
+fn validate(payload: &str, what: &str) {
+    assert!(
+        !payload.is_empty(),
+        "{what}: the payload is empty, so validating it would prove nothing"
+    );
+    jj_hunk_tool::validate::validate_patch(payload)
+        .unwrap_or_else(|error| panic!("{what}: the validator rejected a generated payload: {error}\n--- payload ---\n{payload}"));
+}
+
 /// Property — inline line ranges select exactly the lines they name.
 ///
 /// A hunk id may carry `:start-end` (or a comma-separated list) naming lines of
 /// the hunk body. The sliced payload must keep the hunk's context, contain
 /// exactly the named change lines, keep everything else at most as context, and
-/// still apply cleanly with `patch -p1 -F 0` — i.e. the header counts and the
+/// still apply cleanly with both appliers — i.e. the header counts and the
 /// rearranged body must describe a valid patch. Applying it to the base file
 /// must produce the model where exactly the selected lines changed.
 ///
@@ -302,15 +388,15 @@ fn payload_is_exactly_the_selected_hunks(tc: TestCase) {
 /// index), that drop context and make the patch inapplicable, and headers whose
 /// counts are not recomputed after slicing.
 ///
-/// The payload is applied with `git apply` rather than `patch(1)`: slicing turns
+/// The payload is applied with `git apply` **and** GNU patch: slicing turns
 /// unselected removals into context, which can leave more context before the
 /// changes than after, and GNU patch reads unbalanced context as a hunk anchored
 /// at the file boundary and rejects it (upstream issue #2). The payload builder
-/// now balances context, but `git apply` is still the better oracle here — it
-/// locates hunks by content alone, so it judges the payload on its content rather
-/// than on a location heuristic. The end-to-end `split <id>:start-end` path
-/// through GNU patch is covered by the integration test
-/// `split_partial_hunk_with_uneven_context`.
+/// balances context for that reason, and both appliers must then accept the same
+/// bytes: `git apply` locates a hunk by content alone, so it judges the payload on
+/// its content rather than on a location heuristic, while GNU patch is the one
+/// that cares about the shape. The end-to-end `split <id>:start-end` path is
+/// covered by the integration test `sliced_multi_hunk_selection_applies_cleanly_through_git_apply`.
 #[hegel::test]
 fn inline_ranges_slice_hunks_faithfully(tc: TestCase) {
     // One file, one hunk with three or more change lines: a region of adjacent
@@ -448,7 +534,7 @@ fn inline_ranges_slice_hunks_faithfully(tc: TestCase) {
     // The sliced payload must apply, and must produce the base file with the
     // hunk's old range replaced by the new side the sliced header describes —
     // the model an independently built patch would produce.
-    let applied = apply_patch_to_copy(
+    let applied = apply_patch_to_copy_with_both(
         &path,
         format!("{}\n", base.join("\n")).as_bytes(),
         &run.stdout,
@@ -530,7 +616,7 @@ fn split_moves_exactly_the_selected_hunks(tc: TestCase) {
         let expected = if picked.is_empty() {
             base.clone()
         } else {
-            apply_patch_to_copy(&path, &base, &oracle_blocks_patch(section, &picked))
+            apply_patch_to_copy_with_both(&path, &base, &oracle_blocks_patch(section, &picked))
         };
         assert_eq!(
             repo.jj_file("@-", &path),
@@ -593,7 +679,7 @@ fn squash_moves_exactly_the_selected_hunks(tc: TestCase) {
         let expected = if picked.is_empty() {
             base.clone()
         } else {
-            apply_patch_to_copy(&path, &base, &oracle_blocks_patch(section, &picked))
+            apply_patch_to_copy_with_both(&path, &base, &oracle_blocks_patch(section, &picked))
         };
         assert_eq!(
             repo.jj_file("@-", &path),
@@ -670,7 +756,7 @@ fn diffedit_keeps_exactly_the_selected_hunks(tc: TestCase) {
         let expected = if picked.is_empty() {
             base.clone()
         } else {
-            apply_patch_to_copy(&path, &base, &oracle_blocks_patch(section, &picked))
+            apply_patch_to_copy_with_both(&path, &base, &oracle_blocks_patch(section, &picked))
         };
         assert_eq!(
             repo.jj_file("@", &path),
@@ -725,7 +811,7 @@ fn restore_undoes_exactly_the_selected_hunks(tc: TestCase) {
         let expected = if kept.is_empty() {
             base.clone()
         } else {
-            apply_patch_to_copy(&path, &base, &oracle_blocks_patch(section, &kept))
+            apply_patch_to_copy_with_both(&path, &base, &oracle_blocks_patch(section, &kept))
         };
         assert_eq!(
             repo.jj_file("@", &path),
@@ -873,8 +959,8 @@ fn absorb_routes_hunks_to_their_introducing_ancestor(tc: TestCase) {
 /// produces the same content.
 ///
 /// Differential oracle: content obtained by applying the printed payload to the
-/// base file with `patch(1)` must equal the content `split` commits for the same
-/// hunks. This is the property that ties the payload the user can inspect to
+/// base file — with `git apply` *and* GNU patch, which must agree — must equal the
+/// content `split` commits for the same hunks. This is the property that ties the payload the user can inspect to
 /// what the tool actually writes, so a divergence between the two paths — the
 /// classic "the patch looks right but the commit does not" — cannot pass.
 #[hegel::test]
@@ -920,8 +1006,9 @@ fn printed_payload_and_split_agree(tc: TestCase) {
     let base = case.content(&path, false);
     let picked: Vec<usize> = chosen.iter().map(|hunk| hunk.index).collect();
     let section = section_for(&raw, &path).expect("file changes");
-    let applied_printed = apply_patch_to_copy(&path, &base, &printed.stdout);
-    let from_oracle = apply_patch_to_copy(&path, &base, &oracle_blocks_patch(section, &picked));
+    let applied_printed = apply_patch_to_copy_with_both(&path, &base, &printed.stdout);
+    let from_oracle =
+        apply_patch_to_copy_with_both(&path, &base, &oracle_blocks_patch(section, &picked));
     assert_eq!(
         applied_printed, from_oracle,
         "the printed payload for {path} applies to something different from the \

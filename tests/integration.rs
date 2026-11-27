@@ -976,9 +976,26 @@ fn split_partial_hunk_with_uneven_context() {
 }
 
 /// Apply `patch_text` to a fresh copy of `base` with the named applier and return
-/// the patched bytes. `patch` is what `_jj-tool` itself shells out to; `git apply`
-/// is the strict one users reach for when they save a selection to a file.
+/// the patched bytes.
+///
+/// `git apply` is what the tool's `_jj-tool` protocol runs, so this is the
+/// production path; GNU patch is what it used to run and is kept here as the
+/// strictness oracle. The scratch directory is never `git init`ed: `git apply`
+/// needs no repository, and the helper fails if either applier leaves one (or a
+/// `.orig`/`.rej` backup) behind.
 fn apply_with(applier: &str, label: &str, base: &str, patch_text: &str) -> String {
+    apply_with_mode(applier, label, base, patch_text, false)
+}
+
+/// [`apply_with`], optionally reversing the payload at apply time — which is what
+/// `restore` and `patch --reverse` consumers do.
+fn apply_with_mode(
+    applier: &str,
+    label: &str,
+    base: &str,
+    patch_text: &str,
+    reverse: bool,
+) -> String {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), base).unwrap();
     std::fs::write(dir.path().join("selection.diff"), patch_text).unwrap();
@@ -986,18 +1003,22 @@ fn apply_with(applier: &str, label: &str, base: &str, patch_text: &str) -> Strin
     let mut command = match applier {
         "patch" => {
             let mut command = Command::new("patch");
-            command.args(["-p1", "--silent", "-i", "selection.diff"]);
+            // `--batch` never prompts, `--no-backup-if-mismatch` keeps `.orig`
+            // files out of the scratch directory.
+            command.args(["-p1", "--silent", "--batch", "--no-backup-if-mismatch"]);
+            if reverse {
+                command.arg("-R");
+            }
+            command.args(["-i", "selection.diff"]);
             command
         }
         "git apply" => {
-            let init = Command::new("git")
-                .args(["init", "--quiet", "."])
-                .current_dir(dir.path())
-                .output()
-                .expect("run git init");
-            assert!(init.status.success(), "git init failed");
             let mut command = Command::new("git");
-            command.args(["apply", "-p1", "selection.diff"]);
+            command.args(["apply", "-p1"]);
+            if reverse {
+                command.arg("-R");
+            }
+            command.arg("selection.diff");
             command
         }
         other => panic!("unknown applier {other}"),
@@ -1012,15 +1033,32 @@ fn apply_with(applier: &str, label: &str, base: &str, patch_text: &str) -> Strin
         "{label}: {applier} rejected the payload:\n{}\n--- payload ---\n{patch_text}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    // No repository, no backup files: `git apply` creates neither, and the tool
+    // no longer runs an applier that leaves `.orig`/`.rej` behind on a partial
+    // failure.
+    let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name == ".git" || name.ends_with(".orig") || name.ends_with(".rej"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "{label}: {applier} left {} behind in the scratch directory",
+        leftovers.join(", ")
+    );
+
     std::fs::read_to_string(dir.path().join("a.txt")).unwrap()
 }
 
 /// A change on the first or last line of a file has no context on one side, so
 /// there is nothing to balance against: trimming the other side all the way down
-/// leaves a hunk with no context at all. GNU patch applies such a hunk; `git
-/// apply` refuses it unless told to expect unidiff-zero. A payload only one of the
-/// two appliers can read is not one this tool should print, so the boundary
-/// shapes keep a line of context and are checked against both appliers here.
+/// would leave a hunk with no context at all. GNU patch applies such a hunk;
+/// `git apply` refuses it unless told to expect unidiff-zero. A payload only one
+/// of the two appliers can read is not one this tool should print, so the
+/// boundary shapes keep a line of context and are checked against both appliers
+/// here — and by the property suite, which applies every generated payload with
+/// both (`harness::apply_patch_to_copy_with_both`).
 #[test]
 fn file_boundary_hunks_apply_with_patch_and_git_apply() {
     let lines: Vec<String> = (0..10).map(|index| format!("line{index}\n")).collect();
@@ -1074,6 +1112,150 @@ fn row_count(body: &[&str], sign: char) -> usize {
             line.starts_with(sign) && !line.starts_with("---") && !line.starts_with("+++")
         })
         .count()
+}
+
+/// The listing's 1-based body line number of the row whose content is `needle`
+/// (`"+NEW30"`, `" l27"`, …), which is what a line range addresses.
+fn hunk_body_line(listing: &str, needle: &str) -> usize {
+    listing
+        .lines()
+        .find_map(|line| {
+            let (number, content) = line.split_once(':')?;
+            let number = number.trim().parse::<usize>().ok()?;
+            (content == needle).then_some(number)
+        })
+        .unwrap_or_else(|| panic!("no listing row for {needle:?} in:\n{listing}"))
+}
+
+/// End to end through the applier the tool actually runs: a selection that spans
+/// two hunks, one of them sliced down to a single insertion, must apply cleanly
+/// with plain `git apply` — and with GNU patch, the strictness oracle — and leave
+/// no `.orig`, `.rej` or `.git` behind in the directory it is applied to.
+///
+/// `_jj-tool` is driven directly here, exactly as jj drives it for `split`,
+/// `squash`, `diffedit` and `restore`: two repository-less temp directories, one
+/// holding the parent state and one the state to produce. That is the shape the
+/// GNU patch to `git apply` switch is about, so it is asserted end to end and not
+/// only through the printed payload.
+#[test]
+fn sliced_multi_hunk_selection_applies_cleanly_through_git_apply() {
+    let base_lines: Vec<String> = (0..40).map(|index| format!("l{index:02}\n")).collect();
+    let base: String = base_lines.concat();
+
+    let repo = TestRepo::new();
+    repo.commit_file("a.txt", &base);
+
+    // Two distant changes: a replacement on line 20, and two adjacent insertions
+    // after line 29 (one hunk, because they are adjacent).
+    let mut head = base_lines.clone();
+    head[19] = "CHANGED19\n".to_string();
+    head.insert(30, "NEW30\n".to_string());
+    head.insert(31, "NEW31\n".to_string());
+    repo.write_file("a.txt", &head.concat());
+
+    let ids = repo.get_hunk_ids(&[]);
+    assert_eq!(
+        ids.len(),
+        2,
+        "expected a replacement hunk and an insertion hunk"
+    );
+    let replacement = ids[0].0.clone();
+    let insertion = ids[1].0.clone();
+
+    // Slice the insertion hunk down to its first added line only.
+    let listing = repo.tool_ok(&["hunks"]);
+    let first_insertion = hunk_body_line(&listing, "+NEW30");
+    let payload = repo.tool_ok(&[
+        "patch",
+        &replacement,
+        &format!("{insertion}:{first_insertion}"),
+    ]);
+    assert_eq!(
+        payload.matches("@@ -").count(),
+        2,
+        "the selection spans two hunks:\n{payload}"
+    );
+
+    // What the selection means, by construction: the replacement applied, the
+    // second insertion left out.
+    let mut expected = base_lines.clone();
+    expected[19] = "CHANGED19\n".to_string();
+    expected.insert(30, "NEW30\n".to_string());
+    let expected: String = expected.concat();
+
+    // Both appliers, no repository, no backups.
+    let from_git = apply_with("git apply", "sliced two-hunk selection", &base, &payload);
+    let from_patch = apply_with("patch", "sliced two-hunk selection", &base, &payload);
+    assert_eq!(from_git, expected, "git apply produced the wrong content");
+    assert_eq!(
+        from_patch, expected,
+        "GNU patch and git apply disagree on the same payload"
+    );
+
+    // The same payload through the real `_jj-tool` protocol, in two repo-less
+    // directories outside any working copy.
+    let left = tempfile::tempdir().unwrap();
+    let right = tempfile::tempdir().unwrap();
+    std::fs::write(left.path().join("a.txt"), &base).unwrap();
+    let patch_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(patch_file.path(), &payload).unwrap();
+    let output = run_jj_tool(left.path(), right.path(), Some(patch_file.path()));
+    assert!(
+        output.status.success(),
+        "_jj-tool failed to apply the sliced selection: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let applied = std::fs::read_to_string(right.path().join("a.txt")).unwrap();
+    assert_eq!(applied, expected, "_jj-tool produced the wrong content");
+
+    let leftovers: Vec<String> = std::fs::read_dir(right.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name == ".git" || name.ends_with(".orig") || name.ends_with(".rej"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "_jj-tool left {} behind in the working directory",
+        leftovers.join(", ")
+    );
+
+    // The reverse payload — what `restore` and `patch --reverse` consumers hand
+    // to the same protocol — must undo the selection through both appliers as
+    // well. Reversal is what makes a sliced selection subtle: an added line the
+    // range did not select becomes *context*, because it is already present in
+    // the state being restored from, so the reverse payload is applied to the
+    // head content and must leave the unselected insertion in place.
+    let reversed = repo.tool_ok(&[
+        "patch",
+        &replacement,
+        &format!("{insertion}:{first_insertion}"),
+        "--reverse",
+    ]);
+    let mut after_reverse = base_lines.clone();
+    after_reverse.insert(30, "NEW31\n".to_string());
+    let after_reverse: String = after_reverse.concat();
+    let undone_git = apply_with_mode(
+        "git apply",
+        "reverse sliced selection",
+        &head.concat(),
+        &reversed,
+        true,
+    );
+    let undone_patch = apply_with_mode(
+        "patch",
+        "reverse sliced selection",
+        &head.concat(),
+        &reversed,
+        true,
+    );
+    assert_eq!(
+        undone_git, after_reverse,
+        "git apply -R did not undo the selected hunks"
+    );
+    assert_eq!(
+        undone_patch, after_reverse,
+        "GNU patch -R and git apply -R disagree on the reverse payload"
+    );
 }
 
 #[test]
@@ -1510,6 +1692,51 @@ fn jj_tool_reverse_mode() {
 
     let content = std::fs::read_to_string(right.path().join("file.txt")).unwrap();
     assert_eq!(content, "hello\n", "reverse should undo the patch");
+}
+
+/// The applier writes the payload's bytes, whatever the user's git config says.
+///
+/// The `--tool` directories are outside any repository, so `git apply` reads the
+/// global config — and with `core.autocrlf=true` it rewrites every applied line
+/// to CRLF, silently corrupting a selection's line endings. The runtime passes
+/// `-c core.autocrlf=false` (which also beats a `GIT_CONFIG_*` override, as set
+/// here so the test does not depend on the machine's config), so an LF payload
+/// must produce LF bytes.
+#[test]
+fn jj_tool_preserves_line_endings_under_core_autocrlf() {
+    let left = tempfile::tempdir().unwrap();
+    let right = tempfile::tempdir().unwrap();
+    std::fs::write(left.path().join("f.txt"), "one\ntwo\nthree\n").unwrap();
+
+    let patch_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        patch_file.path(),
+        "--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n",
+    )
+    .unwrap();
+
+    let mut cmd = Command::new(tool_binary());
+    cmd.args([
+        "_jj-tool",
+        &left.path().display().to_string(),
+        &right.path().display().to_string(),
+    ]);
+    cmd.env("JJ_HUNK_TOOL_PATCH", patch_file.path())
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "core.autocrlf")
+        .env("GIT_CONFIG_VALUE_0", "true");
+    let output = cmd.output().unwrap();
+    assert!(
+        output.status.success(),
+        "_jj-tool failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        std::fs::read(right.path().join("f.txt")).unwrap(),
+        b"one\nTWO\nthree\n".to_vec(),
+        "the applier converted the payload's line endings"
+    );
 }
 
 #[test]
