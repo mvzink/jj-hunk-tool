@@ -192,13 +192,24 @@ pub fn build_combined_patch(specs: &[HunkSpec<'_>], reverse: bool) -> Result<Str
     Ok(combined)
 }
 
-/// Trim a hunk's leading or trailing context, whichever is longer, to the
-/// length of the other.
+/// Trim a hunk's leading or trailing context, whichever is longer, down to the
+/// length of the other, but never below one line.
 ///
 /// Slicing turns unselected removals into context, which can leave more on one
 /// side of the changes than the other. GNU patch takes uneven context to mean
 /// the hunk sits at the start or end of the file, and rejects it anywhere else
 /// (https://github.com/mvzink/jj-hunk-tool/issues/2).
+///
+/// A hunk touching a file boundary has no context to balance against on one
+/// side: a change on the first line arrives with nothing before it and three
+/// lines after. Trimming the longer side to the shorter one would then strip the
+/// hunk to *no* context at all. That is a valid unified diff and GNU patch
+/// applies it, but `git apply` refuses a zero-context hunk unless it is told to
+/// expect unidiff-zero, and the hunk no longer carries any evidence that it
+/// belongs where its header claims. Stopping at one line keeps the two sides
+/// within one line of each other — inside GNU patch's fuzz tolerance, so its
+/// location heuristic is not triggered — while leaving a context line for an
+/// applier that wants one.
 pub fn balance_context(hunk: &DiffHunk) -> DiffHunk {
     let lines = &hunk.lines;
     let is_context = |l: &String| l.starts_with(' ');
@@ -215,12 +226,26 @@ pub fn balance_context(hunk: &DiffHunk) -> DiffHunk {
         return hunk.clone();
     }
 
-    let keep = leading.min(trailing);
-    let skip = leading - keep;
-    let end = body.len() - (trailing - keep);
+    // Equal context on both sides, except that a side with none leaves the
+    // other at one line rather than none. `1.min(..)` is what leaves a hunk that
+    // is all change — no context on either side — alone.
+    let shorter = leading.min(trailing);
+    let keep = if shorter == 0 {
+        1.min(leading.max(trailing))
+    } else {
+        shorter
+    };
+    let skip = leading.saturating_sub(keep);
+    let end = body.len() - trailing.saturating_sub(keep);
+    if skip == 0 && end == body.len() {
+        return hunk.clone();
+    }
+
     let mut new_lines = body[skip..end].to_vec();
+    // The marker annotates the last body line, so it survives only if that line
+    // did.
     if let Some(marker) = marker
-        && trailing == keep
+        && end == body.len()
     {
         new_lines.push(marker.clone());
     }
@@ -232,20 +257,18 @@ pub fn balance_context(hunk: &DiffHunk) -> DiffHunk {
             .count()
     };
     let (old_count, new_count) = (count('-'), count('+'));
-    // A side with no lines left is numbered by the line before the hunk
-    let start = |orig: usize, count: usize| {
-        let start = orig + skip;
-        if count == 0 { start - 1 } else { start }
-    };
+    // Trimming only ever removes context, so no side can be emptied here: a hunk
+    // with no context at all (a bare insertion) was returned untouched above,
+    // keeping the numbering `jj` gave it.
     let (old_start, new_start) = parse_header_ranges(&hunk.header);
     let func_ctx = hunk.header.splitn(3, "@@").nth(2).unwrap_or("");
 
     DiffHunk {
         header: format!(
             "@@ -{},{} +{},{} @@{}",
-            start(old_start, old_count),
+            old_start + skip,
             old_count,
-            start(new_start, new_count),
+            new_start + skip,
             new_count,
             func_ctx
         ),
@@ -1311,15 +1334,33 @@ mod tests {
         assert_eq!(balance_context(&even).lines, even.lines);
     }
 
+    /// A hunk at a file boundary has no context on one side, so there is nothing
+    /// to balance against: the other side is trimmed to a single line instead of
+    /// to nothing, which keeps the hunk applicable by `git apply` as well as by
+    /// GNU patch. (It used to be trimmed to nothing, numbering the emptied side by
+    /// the line before the hunk; that is a zero-context hunk, which `git apply`
+    /// rejects unless told to expect unidiff-zero.)
     #[test]
-    fn balance_context_numbers_an_emptied_side_by_the_line_before() {
+    fn balance_context_keeps_one_line_of_context_at_a_file_boundary() {
+        // A change on the first line: nothing before it, three lines after.
         let balanced = balance_context(&hunk("@@ -1,3 +1,4 @@", &["+new", " a", " b", " c"]));
-        assert_eq!(balanced.header, "@@ -0,0 +1,1 @@");
-        assert_eq!(balanced.lines, ["+new"]);
+        assert_eq!(balanced.header, "@@ -1,1 +1,2 @@");
+        assert_eq!(balanced.lines, ["+new", " a"]);
 
+        // A change on the last line: two lines before it, nothing after.
         let balanced = balance_context(&hunk("@@ -5,2 +5,3 @@", &[" a", " b", "+new"]));
-        assert_eq!(balanced.header, "@@ -6,0 +7,1 @@");
-        assert_eq!(balanced.lines, ["+new"]);
+        assert_eq!(balanced.header, "@@ -6,1 +6,2 @@");
+        assert_eq!(balanced.lines, [" b", "+new"]);
+    }
+
+    /// A hunk that is nothing but changes has no context to keep, so it keeps
+    /// none — and `jj` has already numbered both sides the way a bare insertion
+    /// needs, which is why the hunk is passed through untouched.
+    #[test]
+    fn balance_context_leaves_a_hunk_with_no_context_alone() {
+        let bare = hunk("@@ -6,0 +7,1 @@", &["+new"]);
+        assert_eq!(balance_context(&bare).header, bare.header);
+        assert_eq!(balance_context(&bare).lines, bare.lines);
     }
 
     const NO_NEWLINE: &str = "\\ No newline at end of file";
@@ -1330,17 +1371,24 @@ mod tests {
             "@@ -1,3 +1,3 @@",
             &["-old", "+new", " a", " b", NO_NEWLINE],
         ));
-        assert_eq!(balanced.header, "@@ -1,1 +1,1 @@");
-        assert_eq!(balanced.lines, ["-old", "+new"]);
+        // The longer side is trimmed to one line here (a change on the first line
+        // has no context before it), so ` b` goes and the marker goes with it.
+        assert_eq!(balanced.header, "@@ -1,2 +1,2 @@");
+        assert_eq!(balanced.lines, ["-old", "+new", " a"]);
     }
 
     #[test]
     fn balance_context_keeps_a_marker_on_a_change() {
+        // The marker annotates the last body line, not context: trimming leading
+        // context must not take it away.
         let balanced = balance_context(&hunk(
-            "@@ -1,2 +1,2 @@",
-            &[" a", "-old", NO_NEWLINE, "+new", NO_NEWLINE],
+            "@@ -1,3 +1,3 @@",
+            &[" a", " b", "-old", NO_NEWLINE, "+new", NO_NEWLINE],
         ));
-        assert_eq!(balanced.header, "@@ -2,1 +2,1 @@");
-        assert_eq!(balanced.lines, ["-old", NO_NEWLINE, "+new", NO_NEWLINE]);
+        assert_eq!(balanced.header, "@@ -2,2 +2,2 @@");
+        assert_eq!(
+            balanced.lines,
+            [" b", "-old", NO_NEWLINE, "+new", NO_NEWLINE]
+        );
     }
 }

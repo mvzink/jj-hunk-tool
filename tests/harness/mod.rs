@@ -794,13 +794,13 @@ pub fn hunks_for(paths: &[String], output: &str) -> Vec<String> {
 /// payloads are applied here and the tool's own applier is exercised by the
 /// integration suite instead.
 ///
-/// Balancing trims the longer side down to the shorter one, and when a change
-/// sits at the very start or end of a file the shorter side is zero, so the
-/// payload can be a hunk with no context at all (a one-line change on line 1
-/// keeps nothing to trim to). GNU patch accepts that; `git apply` refuses it
-/// unless `--unidiff-zero` says zero-context hunks are expected. That flag does
-/// not loosen the oracle: the hunk must still match the file exactly, on the
-/// line number its header claims.
+/// Balancing trims the longer side down to the shorter one but never below one
+/// line, so a payload always carries at least one line of context even when the
+/// change sits on the first or last line of its file. That floor is why plain
+/// `git apply` is the oracle here and no `--unidiff-zero` is needed: a
+/// zero-context hunk would be accepted by GNU patch and rejected by `git apply`,
+/// and a payload that only one of the two appliers can read is not one this tool
+/// should print.
 pub fn apply_patch_to_copy(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> {
     let scratch = tempfile::tempdir().expect("create scratch dir");
     let target = scratch.path().join(rel);
@@ -819,7 +819,7 @@ pub fn apply_patch_to_copy(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> 
     assert!(init.status.success(), "git init failed in scratch dir");
 
     let apply = Command::new("git")
-        .args(["apply", "-p1", "--unidiff-zero"])
+        .args(["apply", "-p1"])
         .arg(&patch_file)
         .current_dir(scratch.path())
         .output()
@@ -856,7 +856,7 @@ pub fn apply_patch_reversed_to_copy(rel: &str, base: &[u8], patch_text: &str) ->
         .expect("run git init");
     assert!(init.status.success(), "git init failed in scratch dir");
     let apply = Command::new("git")
-        .args(["apply", "-R", "-p1", "--unidiff-zero"])
+        .args(["apply", "-R", "-p1"])
         .arg(&patch_file)
         .current_dir(scratch.path())
         .output()
@@ -933,13 +933,18 @@ pub fn oracle_blocks_patch(section: &[u8], picked: &[usize]) -> String {
 /// One `@@` block with its context balanced, as the payload builder emits it.
 ///
 /// An independent re-derivation of the documented rule (`diff::balance_context`):
-/// trim the longer context side down to the shorter one, renumber the header from
-/// the lines that survive, and keep a trailing `\ No newline at end of file`
-/// marker only while the line it annotates survives. Written from the rule, not
-/// from the implementation, so a payload that agrees with it agrees for the right
-/// reason. `jj`'s own blocks are uneven at file boundaries (one context line
-/// before a change on line 2, three after), which is why a whole-hunk selection
-/// does not come back byte-identical to the listing.
+/// trim the longer context side down to the length of the shorter one but never
+/// below one line, renumber the header from the lines that survive, and keep a
+/// trailing `\ No newline at end of file` marker only while the line it annotates
+/// survives. Written from the rule, not from the implementation, so a payload
+/// that agrees with it agrees for the right reason. `jj`'s own blocks are uneven
+/// at file boundaries (one context line before a change on line 2, none before a
+/// change on line 1), which is why a whole-hunk selection does not come back
+/// byte-identical to the listing.
+///
+/// The one-line floor is load-bearing: trimming a boundary hunk to no context at
+/// all would leave a payload GNU patch accepts and `git apply` rejects without
+/// `--unidiff-zero`.
 pub fn balance_block(header: &str, body: &[String]) -> (String, Vec<String>) {
     let has_marker = body.last().is_some_and(|line| line.starts_with('\\'));
     let core = if has_marker {
@@ -954,15 +959,24 @@ pub fn balance_block(header: &str, body: &[String]) -> (String, Vec<String>) {
         .rev()
         .take_while(|line| is_context(line))
         .count();
-    let keep = leading.min(trailing);
-    if leading == trailing || core.is_empty() {
+    if leading == trailing {
         return (header.to_string(), body.to_vec());
     }
 
-    let mut lines = core[leading - keep..core.len() - (trailing - keep)].to_vec();
-    if has_marker && trailing > keep {
-        // The marker annotated a trailing context line that is gone.
-    } else if has_marker {
+    let shorter = leading.min(trailing);
+    let keep = if shorter == 0 {
+        1.min(leading.max(trailing))
+    } else {
+        shorter
+    };
+    let skip = leading.saturating_sub(keep);
+    let end = core.len() - trailing.saturating_sub(keep);
+    if skip == 0 && end == core.len() {
+        return (header.to_string(), body.to_vec());
+    }
+
+    let mut lines = core[skip..end].to_vec();
+    if has_marker && end == core.len() {
         lines.push(body[body.len() - 1].clone());
     }
 
@@ -974,21 +988,12 @@ pub fn balance_block(header: &str, body: &[String]) -> (String, Vec<String>) {
     };
     let (old_count, new_count) = (count('-'), count('+'));
     let (old_start, _, new_start, _) = parse_hunk_header(header);
-    let offset = leading - keep;
-    // Unified diff numbers a side with no lines by the line before the hunk.
-    let start = |start: usize, count: usize| {
-        if count == 0 {
-            start + offset - 1
-        } else {
-            start + offset
-        }
-    };
     let function_context = header.splitn(3, "@@").nth(2).unwrap_or("");
     let balanced_header = format!(
         "@@ -{},{} +{},{} @@{}",
-        start(old_start, old_count),
+        old_start + skip,
         old_count,
-        start(new_start, new_count),
+        new_start + skip,
         new_count,
         function_context
     );

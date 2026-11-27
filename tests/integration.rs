@@ -975,6 +975,107 @@ fn split_partial_hunk_with_uneven_context() {
     assert_eq!(repo.read_file("a.conf"), changed);
 }
 
+/// Apply `patch_text` to a fresh copy of `base` with the named applier and return
+/// the patched bytes. `patch` is what `_jj-tool` itself shells out to; `git apply`
+/// is the strict one users reach for when they save a selection to a file.
+fn apply_with(applier: &str, label: &str, base: &str, patch_text: &str) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), base).unwrap();
+    std::fs::write(dir.path().join("selection.diff"), patch_text).unwrap();
+
+    let mut command = match applier {
+        "patch" => {
+            let mut command = Command::new("patch");
+            command.args(["-p1", "--silent", "-i", "selection.diff"]);
+            command
+        }
+        "git apply" => {
+            let init = Command::new("git")
+                .args(["init", "--quiet", "."])
+                .current_dir(dir.path())
+                .output()
+                .expect("run git init");
+            assert!(init.status.success(), "git init failed");
+            let mut command = Command::new("git");
+            command.args(["apply", "-p1", "selection.diff"]);
+            command
+        }
+        other => panic!("unknown applier {other}"),
+    };
+
+    let output = command
+        .current_dir(dir.path())
+        .output()
+        .unwrap_or_else(|error| panic!("could not run {applier}: {error}"));
+    assert!(
+        output.status.success(),
+        "{label}: {applier} rejected the payload:\n{}\n--- payload ---\n{patch_text}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::read_to_string(dir.path().join("a.txt")).unwrap()
+}
+
+/// A change on the first or last line of a file has no context on one side, so
+/// there is nothing to balance against: trimming the other side all the way down
+/// leaves a hunk with no context at all. GNU patch applies such a hunk; `git
+/// apply` refuses it unless told to expect unidiff-zero. A payload only one of the
+/// two appliers can read is not one this tool should print, so the boundary
+/// shapes keep a line of context and are checked against both appliers here.
+#[test]
+fn file_boundary_hunks_apply_with_patch_and_git_apply() {
+    let lines: Vec<String> = (0..10).map(|index| format!("line{index}\n")).collect();
+    let base: String = lines.concat();
+
+    // `jj` gives a change as much context as the file allows: none before a
+    // change on line 1, one before a change on line 2, none after a change on the
+    // last line.
+    for (label, index) in [
+        ("change on the first line", 0usize),
+        ("change on the second line", 1),
+        ("change on the last line", lines.len() - 1),
+    ] {
+        let repo = TestRepo::new();
+        let mut head = lines.clone();
+        head[index] = format!("changed{index}\n");
+        repo.commit_file("a.txt", &base);
+        repo.write_file("a.txt", &head.concat());
+
+        let id = repo.get_single_hunk_id(&[]);
+        let patch = repo.tool_ok(&["patch", &id]);
+        let body: Vec<&str> = patch
+            .lines()
+            .skip_while(|line| !line.starts_with("@@ "))
+            .skip(1)
+            .collect();
+        assert!(
+            body.iter().any(|line| line.starts_with(' ')),
+            "{label}: the payload carries no context line at all:\n{patch}"
+        );
+
+        let replaced = row_count(&body, '-');
+        let added = row_count(&body, '+');
+        for applier in ["patch", "git apply"] {
+            let applied = apply_with(applier, label, &base, &patch);
+            assert_eq!(
+                applied,
+                head.concat(),
+                "{label}: {applier} applied the payload to something other than the edit \
+                 ({replaced} removed, {added} added rows)"
+            );
+        }
+    }
+}
+
+/// Lines of a payload body that carry `sign`, ignoring the `+++`/`---` file
+/// headers a caller might leave in.
+fn row_count(body: &[&str], sign: char) -> usize {
+    body.iter()
+        .filter(|line| {
+            line.starts_with(sign) && !line.starts_with("---") && !line.starts_with("+++")
+        })
+        .count()
+}
+
 #[test]
 fn split_invalid_id() {
     let repo = TestRepo::new();
