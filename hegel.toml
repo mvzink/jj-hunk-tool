@@ -1,9 +1,12 @@
-# Hegel settings for the property tests in `tests/properties.rs`.
+# Hegel settings for the property tests in `tests/properties.rs`,
+# `tests/properties_shapes.rs` and `tests/properties_apply.rs`.
 #
-# Case counts are per property, not per file: six properties mean 6 x N generated
-# jj repositories per full run of the file. Measured on an 8-core dev box (see the
-# soak notes in the PR): ~23 cases/s aggregate, so N=32 is ~7 s, N=200 is ~45 s and
-# N=2000 is ~7-8 minutes.
+# Case counts are per property, not per file. There are 18 properties, so a full
+# run of the three files generates 18 x N jj repositories. Measured on the 8-core
+# reference box, wall clock for the whole suite (all test binaries, nextest):
+# N=32 is ~30 s, N=200 is ~3 min, N=2000 is ~30 min. The cost is subprocesses —
+# every case runs `jj git init`, one or two commits and several tool invocations —
+# not generation, so the count is where the runtime is set.
 #
 # `HEGEL_TEST_CASES=<n>` still overrides the case count for an ad-hoc run
 # (`HEGEL_TEST_CASES=500 cargo nextest run --test properties`); it wins over a
