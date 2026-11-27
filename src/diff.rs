@@ -2,8 +2,29 @@ use anyhow::{Result, bail};
 use std::collections::HashSet;
 use std::process::Command;
 
+use git_surgeon::diff::DiffHunk;
 pub use git_surgeon::diff::{check_supported, parse_diff};
 pub use git_surgeon::hunk_id::assign_ids;
+
+/// [`check_supported`], with coverage markers on both outcomes.
+///
+/// A hunk can carry preamble metadata that hunk-level operations cannot
+/// represent (a rename, a copy, a mode change, a similarity index). Those hunks
+/// are still *listed*, so every command that would move one must reject it
+/// here: `patch/supported_hunk` and `error/unsupported_metadata` are the two
+/// sides of that decision.
+pub fn require_supported(hunk: &DiffHunk, id: &str) -> Result<()> {
+    match check_supported(hunk, id) {
+        Ok(()) => {
+            crate::hit!(PatchSupportedHunk);
+            Ok(())
+        }
+        Err(error) => {
+            crate::hit!(ErrorUnsupportedMetadata);
+            Err(error)
+        }
+    }
+}
 
 /// Is this side of a diff section absent, i.e. a `--- /dev/null` (added file) or
 /// `+++ /dev/null` (deleted file) header?
@@ -155,6 +176,7 @@ fn decode_diff(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len());
     let mut section_start = 0;
     let mut line_start = 0;
+    let mut sections = 0;
     while line_start < bytes.len() {
         let line_end = bytes[line_start..]
             .iter()
@@ -162,19 +184,30 @@ fn decode_diff(bytes: &[u8]) -> String {
             .map_or(bytes.len(), |i| line_start + i + 1);
         if line_start > section_start && bytes[line_start..line_end].starts_with(DIFF_FILE_MARKER) {
             push_diff_section(&mut out, &bytes[section_start..line_start]);
+            sections += 1;
             section_start = line_start;
         }
         line_start = line_end;
     }
-    push_diff_section(&mut out, &bytes[section_start..]);
+    if !bytes.is_empty() {
+        push_diff_section(&mut out, &bytes[section_start..]);
+        sections += 1;
+    }
+    if sections > 1 {
+        crate::hit!(DiffSectionsMultiple);
+    }
     out
 }
 
 /// Append one file's diff section to `out` if it is valid UTF-8.
 fn push_diff_section(out: &mut String, section: &[u8]) {
     match std::str::from_utf8(section) {
-        Ok(text) => out.push_str(text),
+        Ok(text) => {
+            crate::hit!(DiffSectionDecoded);
+            out.push_str(text);
+        }
         Err(_) => {
+            crate::hit!(DiffSectionUndecodableSkipped);
             let header = String::from_utf8_lossy(section);
             let header = header.lines().next().unwrap_or("");
             eprintln!("warning: skipping non-UTF-8 file (treated as binary): {header}");

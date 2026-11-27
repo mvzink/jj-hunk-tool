@@ -130,7 +130,10 @@ fn parse_header_ranges(header: &str) -> (usize, usize) {
     let header = header.trim();
     let after_at = match header.strip_prefix("@@ -") {
         Some(s) => s,
-        None => return (1, 1),
+        None => {
+            crate::hit!(OffsetHeaderRangesFallback);
+            return (1, 1);
+        }
     };
 
     // Parse old range
@@ -158,7 +161,10 @@ fn parse_header_ranges(header: &str) -> (usize, usize) {
                 .parse::<usize>()
                 .ok()
         })
-        .unwrap_or(1);
+        .unwrap_or_else(|| {
+            crate::hit!(OffsetHeaderRangesFallback);
+            1
+        });
 
     (old_start, new_start)
 }
@@ -170,12 +176,15 @@ pub type HunkSpec<'a> = (&'a str, &'a DiffHunk, Vec<(usize, usize)>);
 pub fn build_combined_patch(specs: &[HunkSpec<'_>], reverse: bool) -> Result<String> {
     let mut combined = String::new();
     for (id, hunk, ranges) in specs {
-        git_surgeon::diff::check_supported(hunk, id)?;
+        crate::diff::require_supported(hunk, id)?;
         let patched = if !ranges.is_empty() {
+            crate::hit!(SelectLineRanges);
             git_surgeon::patch::slice_hunk_multi(hunk, ranges, reverse)?
         } else if reverse {
+            crate::hit!(PatchReverse);
             git_surgeon::patch::slice_hunk(hunk, 1, hunk.lines.len(), true)?
         } else {
+            crate::hit!(PatchWholeHunk);
             (*hunk).clone()
         };
         combined.push_str(&git_surgeon::patch::build_patch(&balance_context(&patched)));
@@ -244,6 +253,16 @@ pub fn balance_context(hunk: &DiffHunk) -> DiffHunk {
         ..hunk.clone()
     }
 }
+/// [`build_combined_patch`] for the apply modes, which treat an empty payload as
+/// "the user selected nothing" rather than as a valid no-op.
+fn apply_patch(specs: &[HunkSpec<'_>], reverse: bool) -> Result<String> {
+    let patch_content = build_combined_patch(specs, reverse)?;
+    if patch_content.is_empty() {
+        crate::hit!(ErrorNoHunksSelected);
+        bail!("no hunks selected");
+    }
+    Ok(patch_content)
+}
 
 /// Run a jj command with our tool configured via inline --config flags.
 fn run_jj_with_tool(
@@ -296,6 +315,7 @@ fn run_jj_with_tool(
     }
 
     if !output.status.success() {
+        crate::hit!(ErrorJjCommandFailed);
         bail!("jj command failed");
     }
 
@@ -311,10 +331,7 @@ pub fn split_hunks(
     extra_args: &[&str],
     debug: bool,
 ) -> Result<()> {
-    let patch_content = build_combined_patch(specs, false)?;
-    if patch_content.is_empty() {
-        bail!("no hunks selected");
-    }
+    let patch_content = apply_patch(specs, false)?;
 
     let mut args: Vec<&str> = vec!["split"];
     if let Some(rev) = revision {
@@ -336,10 +353,7 @@ pub fn split_hunks(
 
 /// Squash selected hunks from source into destination using jj squash --tool.
 pub fn squash_hunks(specs: &[HunkSpec<'_>], extra_args: &[&str], debug: bool) -> Result<()> {
-    let patch_content = build_combined_patch(specs, false)?;
-    if patch_content.is_empty() {
-        bail!("no hunks selected");
-    }
+    let patch_content = apply_patch(specs, false)?;
     let mut args = vec!["squash"];
     args.extend_from_slice(extra_args);
     run_jj_with_tool(&args, &patch_content, false, debug)
@@ -347,10 +361,7 @@ pub fn squash_hunks(specs: &[HunkSpec<'_>], extra_args: &[&str], debug: bool) ->
 
 /// Rewrite a revision in-place, keeping only the selected hunks.
 pub fn diffedit_hunks(specs: &[HunkSpec<'_>], jj_extra_args: &[&str], debug: bool) -> Result<()> {
-    let patch_content = build_combined_patch(specs, false)?;
-    if patch_content.is_empty() {
-        bail!("no hunks selected");
-    }
+    let patch_content = apply_patch(specs, false)?;
     let mut args = vec!["diffedit"];
     args.extend_from_slice(jj_extra_args);
     run_jj_with_tool(&args, &patch_content, false, debug)
@@ -359,10 +370,9 @@ pub fn diffedit_hunks(specs: &[HunkSpec<'_>], jj_extra_args: &[&str], debug: boo
 /// Restore (undo) selected hunks. The caller provides the jj-specific args
 /// (e.g. ["--changes-in", "@"] or ["--from", "x", "--into", "y"]).
 pub fn restore_hunks(specs: &[HunkSpec<'_>], jj_extra_args: &[&str], debug: bool) -> Result<()> {
-    let patch_content = build_combined_patch(specs, false)?;
-    if patch_content.is_empty() {
-        bail!("no hunks selected");
-    }
+    // The payload is built forward; `jj restore` is told to apply it in reverse
+    // (see the `REVERSE_ENV_VAR` handling in `jj_tool_apply`).
+    let patch_content = apply_patch(specs, false)?;
     let mut args = vec!["restore"];
     args.extend_from_slice(jj_extra_args);
     run_jj_with_tool(&args, &patch_content, true, debug)
@@ -531,6 +541,7 @@ pub fn absorb_hunks(
         // New files can't be annotated: nothing in the parent could have
         // introduced a line of a file the parent does not have.
         if crate::diff::is_absent_side(&hunk.old_file) {
+            crate::hit!(AbsorbNewFile);
             routings.push((
                 HunkRouting {
                     hunk_id: id.clone(),
@@ -625,12 +636,15 @@ pub fn absorb_hunks(
             } else if debug {
                 eprintln!("debug: hunk {id}: no deletions, skipping line-level annotation");
             }
-        } else if debug {
-            eprintln!(
-                "debug: hunk {id} ({file}): failed to parse old_range from header: {:?}",
-                hunk.header,
-                file = hunk.file,
-            );
+        } else {
+            crate::hit!(OffsetOldRangeUnparsed);
+            if debug {
+                eprintln!(
+                    "debug: hunk {id} ({file}): failed to parse old_range from header: {:?}",
+                    hunk.header,
+                    file = hunk.file,
+                );
+            }
         }
 
         if debug {
@@ -638,6 +652,7 @@ pub fn absorb_hunks(
         }
 
         let (target, candidates, reason) = if ancestor_hits.len() == 1 {
+            crate::hit!(AbsorbMatchedChange);
             let target = ancestor_hits.into_keys().next().unwrap();
             (Some(target), vec![], "matched")
         } else if ancestor_hits.is_empty() {
@@ -645,15 +660,21 @@ pub fn absorb_hunks(
             if !crate::diff::is_absent_side(&hunk.old_file) {
                 match file_ancestors_cache.get(&hunk.file) {
                     Some(file_ancestors) if !file_ancestors.is_empty() => {
+                        crate::hit!(AbsorbMatchedFile);
                         let target = file_ancestors[0].clone();
                         (Some(target), vec![], "matched (file)")
                     }
-                    _ => (None, vec![], "no overlapping ancestor hunk"),
+                    _ => {
+                        crate::hit!(AbsorbNoOverlap);
+                        (None, vec![], "no overlapping ancestor hunk")
+                    }
                 }
             } else {
+                crate::hit!(AbsorbNoOverlap);
                 (None, vec![], "no overlapping ancestor hunk")
             }
         } else {
+            crate::hit!(AbsorbAmbiguous);
             let candidates: Vec<String> = ancestor_hits.into_keys().collect();
             (None, candidates, "ambiguous")
         };
@@ -978,6 +999,7 @@ pub fn absorb_hunks(
     }
 
     if dry_run {
+        crate::hit!(ApplyAbsorbDryRun);
         return Ok(());
     }
 
@@ -1032,6 +1054,7 @@ pub fn absorb_hunks(
         run_jj_with_tool(&args, &patch_content, false, debug)?;
     }
 
+    crate::hit!(ApplyAbsorbExecute);
     println!("To undo, run: jj op restore {pre_op_id}");
 
     Ok(())
@@ -1066,8 +1089,10 @@ fn parse_old_range(header: &str) -> Option<(usize, usize)> {
 /// 2. Reset $right to match $left (copy all files from left, remove extras)
 /// 3. Apply the patch to $right
 pub fn jj_tool_apply(left: &str, right: &str) -> Result<()> {
-    let patch_path = std::env::var(PATCH_ENV_VAR)
-        .with_context(|| format!("{PATCH_ENV_VAR} environment variable not set"))?;
+    let patch_path = std::env::var(PATCH_ENV_VAR).with_context(|| {
+        crate::hit!(ErrorMissingPatchEnv);
+        format!("{PATCH_ENV_VAR} environment variable not set")
+    })?;
 
     let left_path = Path::new(left);
     let right_path = Path::new(right);
@@ -1077,6 +1102,10 @@ pub fn jj_tool_apply(left: &str, right: &str) -> Result<()> {
 
     // Step 2: Apply the pre-computed patch
     let reverse = std::env::var(REVERSE_ENV_VAR).is_ok();
+    crate::hit!(ApplyJjTool);
+    if reverse {
+        crate::hit!(ApplyJjToolReverse);
+    }
     let mut patch_cmd = Command::new("patch");
     patch_cmd.args(["-p1", "--silent"]);
     if reverse {
@@ -1087,6 +1116,7 @@ pub fn jj_tool_apply(left: &str, right: &str) -> Result<()> {
     let status = patch_cmd.status().context("failed to run patch")?;
 
     if !status.success() {
+        crate::hit!(ErrorPatchApplyFailed);
         bail!("patch failed to apply (exit code: {:?})", status.code());
     }
 

@@ -1,12 +1,10 @@
-mod diff;
-mod hunk_id;
-mod patch;
-mod tool;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use jj_hunk_tool::hit;
+use jj_hunk_tool::{diff, markers, tool};
 
 use diff::{assign_ids, get_jj_diff, parse_diff};
+use git_surgeon::diff::DiffHunk;
 
 #[derive(Parser)]
 #[command(name = "jj-hunk-tool", version, about = "Hunk-level operations for jj")]
@@ -159,6 +157,16 @@ enum Command {
 }
 
 fn main() -> Result<()> {
+    let result = run();
+    // Emit the coverage markers of this invocation, if the caller asked for
+    // them (see `markers::emit_if_requested`). Doing it here, on both the
+    // success and the error path, means a failing command still reports which
+    // paths it reached before failing.
+    markers::emit_if_requested();
+    result
+}
+
+fn run() -> Result<()> {
     // Prevent any child process (jj, patch, etc.) from opening an interactive editor.
     // SAFETY: this runs at the start of main before any threads are spawned.
     unsafe { std::env::set_var("EDITOR", "true") };
@@ -173,11 +181,8 @@ fn main() -> Result<()> {
             file,
         } => {
             let raw = get_jj_diff(&revision, debug)?;
-            let hunks = parse_diff(&raw);
+            let hunks = identify(&raw, debug);
             let identified = assign_ids(&hunks);
-            if debug {
-                eprintln!("debug: parsed {} hunks from diff", identified.len());
-            }
 
             let max_preview_lines = 4;
 
@@ -236,27 +241,15 @@ fn main() -> Result<()> {
             reverse,
         } => {
             let raw = get_jj_diff(&revision, debug)?;
-            let hunks = parse_diff(&raw);
+            let hunks = identify(&raw, debug);
             let identified = assign_ids(&hunks);
-            for raw_spec in &hunk_ids {
-                let (id, ranges) = parse_id_range(raw_spec)?;
-                let (_id, hunk) = identified
-                    .iter()
-                    .find(|(hid, _)| hid == id)
-                    .ok_or_else(|| anyhow::anyhow!("hunk not found: {id}"))?;
-                diff::check_supported(hunk, id)?;
-                let patched = if !ranges.is_empty() {
-                    git_surgeon::patch::slice_hunk_multi(hunk, &ranges, reverse)?
-                } else if reverse {
-                    git_surgeon::patch::slice_hunk(hunk, 1, hunk.lines.len(), true)?
-                } else {
-                    (*hunk).clone()
-                };
-                print!(
-                    "{}",
-                    git_surgeon::patch::build_patch(&tool::balance_context(&patched))
-                );
-            }
+            let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
+            hit!(ApplyPatchOnly);
+            // The same payload builder every apply mode uses, so `patch` output
+            // and what `split`/`squash`/`diffedit`/`restore` commit cannot
+            // drift apart. Nothing is printed if any selected hunk is
+            // unsupported, instead of a truncated patch followed by an error.
+            print!("{}", tool::build_combined_patch(&specs, reverse)?);
         }
         Command::Split {
             hunk_ids,
@@ -268,7 +261,7 @@ fn main() -> Result<()> {
             insert_before,
         } => {
             let raw = get_jj_diff(&Some(revision.clone()), debug)?;
-            let hunks = parse_diff(&raw);
+            let hunks = identify(&raw, debug);
             let identified = assign_ids(&hunks);
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
             let mut extra_args: Vec<String> = Vec::new();
@@ -285,6 +278,10 @@ fn main() -> Result<()> {
                 extra_args.push(rev.clone());
             }
             let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
+            hit!(ApplySplit);
+            if parallel {
+                hit!(ApplySplitParallel);
+            }
             tool::split_hunks(
                 &specs,
                 Some(&revision),
@@ -318,9 +315,10 @@ fn main() -> Result<()> {
                 "@".to_string()
             };
             let raw = get_jj_diff(&Some(diff_rev), debug)?;
-            let hunks = parse_diff(&raw);
+            let hunks = identify(&raw, debug);
             let identified = assign_ids(&hunks);
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
+            hit!(ApplySquash);
             let mut extra_args: Vec<String> = Vec::new();
             if let Some(ref rev) = revision {
                 extra_args.push("-r".into());
@@ -389,10 +387,11 @@ fn main() -> Result<()> {
                 }
                 (raw, args)
             };
-            let hunks = parse_diff(&raw);
+            let hunks = identify(&raw, debug);
             let identified = assign_ids(&hunks);
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
             let jj_arg_refs: Vec<&str> = jj_args.iter().map(|s| s.as_str()).collect();
+            hit!(ApplyDiffedit);
             tool::diffedit_hunks(&specs, &jj_arg_refs, debug)?;
         }
         Command::Restore {
@@ -434,10 +433,11 @@ fn main() -> Result<()> {
                 }
                 (raw, args)
             };
-            let hunks = parse_diff(&raw);
+            let hunks = identify(&raw, debug);
             let identified = assign_ids(&hunks);
             let specs = resolve_hunk_specs(&hunk_ids, &identified)?;
             let jj_arg_refs: Vec<&str> = jj_args.iter().map(|s| s.as_str()).collect();
+            hit!(ApplyRestore);
             tool::restore_hunks(&specs, &jj_arg_refs, debug)?;
         }
         Command::Absorb {
@@ -448,7 +448,7 @@ fn main() -> Result<()> {
         } => {
             let source = revision.as_deref().unwrap_or("@");
             let raw = get_jj_diff(&Some(source.to_string()), debug)?;
-            let hunks = parse_diff(&raw);
+            let hunks = identify(&raw, debug);
             let identified = assign_ids(&hunks);
             if identified.is_empty() {
                 println!("Nothing to absorb.");
@@ -464,11 +464,22 @@ fn main() -> Result<()> {
                     let entry = identified
                         .iter()
                         .find(|(hid, _)| hid == id)
-                        .ok_or_else(|| anyhow::anyhow!("hunk not found: {id}"))?;
+                        .ok_or_else(|| {
+                            hit!(ErrorHunkNotFound);
+                            anyhow::anyhow!("hunk not found: {id}")
+                        })?;
                     sel.push(entry);
                 }
                 sel
             };
+            markers::observe_selection(
+                &selected
+                    .iter()
+                    .map(|(id, _)| id.as_str())
+                    .collect::<Vec<_>>(),
+                &all_ids(&identified),
+                false,
+            );
             tool::absorb_hunks(&selected, source, dry_run, interactive, debug)?;
         }
         Command::JjTool { left, right } => {
@@ -481,7 +492,32 @@ fn main() -> Result<()> {
 
 use tool::HunkSpec;
 
+/// Parse `jj diff` output into hunks and record the shapes it contains as
+/// coverage markers ([`markers::observe_hunks`]).
+///
+/// Every command obtains its hunks through here, which is what makes the shape
+/// markers a description of what the tool actually received rather than a claim
+/// about the code. See the "Coverage markers" section of the README.
+fn identify(raw: &str, debug: bool) -> Vec<DiffHunk> {
+    let hunks = parse_diff(raw);
+    let identified = assign_ids(&hunks);
+    markers::observe_hunks(&identified);
+    if debug {
+        eprintln!("debug: parsed {} hunks from diff", identified.len());
+    }
+    hunks
+}
+
+/// The ids of every identified hunk, in listing order.
+fn all_ids<'a>(identified: &'a [(String, &'a DiffHunk)]) -> Vec<&'a str> {
+    identified.iter().map(|(id, _)| id.as_str()).collect()
+}
+
 /// Resolve hunk ID specs (with optional line ranges) against identified hunks.
+///
+/// Also records the selection shape as coverage markers: this is the single
+/// place every apply mode resolves user hunks, so `select/*` describes what the
+/// tool was actually asked to move.
 fn resolve_hunk_specs<'a>(
     raw_specs: &[String],
     identified: &'a [(String, &'a git_surgeon::diff::DiffHunk)],
@@ -492,9 +528,18 @@ fn resolve_hunk_specs<'a>(
         let (matched_id, hunk) = identified
             .iter()
             .find(|(hid, _)| hid == id)
-            .ok_or_else(|| anyhow::anyhow!("hunk not found: {id}"))?;
+            .ok_or_else(|| {
+                hit!(ErrorHunkNotFound);
+                anyhow::anyhow!("hunk not found: {id}")
+            })?;
         specs.push((matched_id.as_str(), *hunk, ranges));
     }
+    let selected: Vec<&str> = specs.iter().map(|(id, _, _)| *id).collect();
+    markers::observe_selection(
+        &selected,
+        &all_ids(identified),
+        specs.iter().any(|(_, _, ranges)| !ranges.is_empty()),
+    );
     Ok(specs)
 }
 
@@ -512,20 +557,24 @@ fn parse_id_range(raw: &str) -> Result<(&str, Vec<(usize, usize)>)> {
             continue;
         }
         let (start, end) = if let Some((a, b)) = part.split_once('-') {
-            let start: usize = a
-                .parse()
-                .map_err(|_| anyhow::anyhow!("invalid start number in '{raw}'"))?;
-            let end: usize = b
-                .parse()
-                .map_err(|_| anyhow::anyhow!("invalid end number in '{raw}'"))?;
+            let start: usize = a.parse().map_err(|_| {
+                hit!(ErrorInvalidRangeStart);
+                anyhow::anyhow!("invalid start number in '{raw}'")
+            })?;
+            let end: usize = b.parse().map_err(|_| {
+                hit!(ErrorInvalidRangeEnd);
+                anyhow::anyhow!("invalid end number in '{raw}'")
+            })?;
             (start, end)
         } else {
-            let n: usize = part
-                .parse()
-                .map_err(|_| anyhow::anyhow!("invalid line number in '{raw}'"))?;
+            let n: usize = part.parse().map_err(|_| {
+                hit!(ErrorInvalidLineNumber);
+                anyhow::anyhow!("invalid line number in '{raw}'")
+            })?;
             (n, n)
         };
         if start == 0 || end == 0 || start > end {
+            hit!(ErrorRangeBounds);
             anyhow::bail!("range must be 1-based and start <= end in '{raw}'");
         }
         ranges.push((start, end));
