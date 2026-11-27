@@ -29,7 +29,9 @@ enum Command {
         #[arg(long)]
         compact: bool,
         /// Filter to a specific file
-        #[arg(long)]
+        // A path may legally begin with `-` (or even look like a patch header),
+        // so the value must be taken verbatim rather than parsed as a flag.
+        #[arg(long, allow_hyphen_values = true)]
         file: Option<String>,
     },
     /// Output a patch for selected hunks
