@@ -7,7 +7,8 @@
 //! properties apply payloads with `patch(1)`, which cannot open a path with a
 //! space in it and (see `tests/properties_shapes.rs`) does not survive CRLF for
 //! reasons unrelated to selection. The *payload* is still compared byte for byte
-//! with `jj`'s own `@@` blocks, whitespace included.
+//! with `jj`'s own `@@` blocks, whitespace included, after the context balancing
+//! the builder documents (`harness::balance_block` re-derives it from the rule).
 //!
 //! Every property states what it proves and which bug class it kills, and each
 //! asserts the coverage markers of the path it took.
@@ -147,13 +148,14 @@ fn listed_hunks(repo: &Repo, case: &TextCase) -> Vec<HunkRef> {
 }
 
 /// The payload a correct implementation must produce for `chosen`, in the
-/// order the ids were given.
+/// order the ids were given: `jj`'s own blocks for exactly those hunks, each with
+/// its context balanced (`harness::oracle_payload`).
 fn oracle_payload(raw: &[u8], chosen: &[HunkRef]) -> String {
     let mut payload = String::new();
     for hunk in chosen {
         let section = section_for(raw, &hunk.path)
             .unwrap_or_else(|| panic!("no section for {:?}", hunk.path));
-        payload.push_str(&oracle_blocks_patch(section, &[hunk.index]));
+        payload.push_str(&harness::oracle_payload(section, &[hunk.index]));
     }
     payload
 }
@@ -231,11 +233,17 @@ fn selection(tc: &TestCase) -> Selection {
 ///
 /// For each selection shape (all, first, last, a middle hunk, a contiguous run,
 /// every other hunk) the printed payload must equal the concatenation of `jj`'s
-/// own `@@` blocks for exactly those hunks, in the order the ids were given:
-/// same file header, same `@@` line (offsets *and* function context), same
-/// context lines with their trailing whitespace, and no extra blank lines. An
-/// empty selection prints nothing and exits 0. Each selection shape's marker
-/// must have been hit.
+/// own `@@` blocks for exactly those hunks, in the order the ids were given, each
+/// with its context balanced: same file header, same context lines with their
+/// trailing whitespace, same function context, an `@@` line whose offsets and
+/// counts describe the lines that survived, and no extra blank lines. An empty
+/// selection prints nothing and exits 0. Each selection shape's marker must have
+/// been hit.
+///
+/// Balancing is the one documented transformation of `jj`'s bytes: it trims the
+/// longer context side to the length of the shorter one, because GNU patch reads
+/// uneven context as a hunk anchored at a file boundary (issue #2). Hunks in the
+/// middle of a file are untouched; ones at a file boundary lose their surplus.
 ///
 /// Kills: payloads that drop or re-order hunks, that re-render bodies (losing
 /// trailing whitespace or CR), that include a neighbouring hunk, that invent a
@@ -297,10 +305,12 @@ fn payload_is_exactly_the_selected_hunks(tc: TestCase) {
 /// The payload is applied with `git apply` rather than `patch(1)`: slicing turns
 /// unselected removals into context, which can leave more context before the
 /// changes than after, and GNU patch reads unbalanced context as a hunk anchored
-/// at the file boundary and rejects it (upstream issue #2). `git apply` has no
-/// such heuristic, so it judges the payload on its content alone. That also means
-/// `split <id>:start-end` is not asserted end-to-end here; when the context
-/// balancing fix lands, this property can require it.
+/// at the file boundary and rejects it (upstream issue #2). The payload builder
+/// now balances context, but `git apply` is still the better oracle here — it
+/// locates hunks by content alone, so it judges the payload on its content rather
+/// than on a location heuristic. The end-to-end `split <id>:start-end` path
+/// through GNU patch is covered by the integration test
+/// `split_partial_hunk_with_uneven_context`.
 #[hegel::test]
 fn inline_ranges_slice_hunks_faithfully(tc: TestCase) {
     // One file, one hunk with three or more change lines: a region of adjacent
@@ -369,13 +379,34 @@ fn inline_ranges_slice_hunks_faithfully(tc: TestCase) {
         run.stdout
     );
     let (sliced_header, sliced_body) = &sliced_blocks[0];
-    let (old_start, old_count, new_start, new_count) = parse_hunk_header(sliced_header);
+    let (old_start, old_count, _, new_count) = parse_hunk_header(sliced_header);
     let (old_side, new_side) = body_sides(sliced_body);
     assert_eq!((old_count, new_count), (old_side.len(), new_side.len()));
-    assert_eq!((old_start, new_start), {
-        let (o, _, n, _) = parse_hunk_header(header);
-        (o, n)
-    });
+    // The payload's header must describe the base file at the line it names: its
+    // old side is the base content from `old_start` for `old_count` lines. This is
+    // what pins header arithmetic now that the payload builder balances context
+    // (trimming the longer side, so the start can move *down*): comparing the start
+    // to the hunk's own header would forbid that trim, so the file is the oracle.
+    let hunk_start = parse_hunk_header(header).0;
+    assert!(
+        old_start >= hunk_start,
+        "balancing only trims context, so the payload cannot start before the hunk \
+         ({sliced_header} vs {header})"
+    );
+    let claimed = base
+        .get(old_start - 1..old_start - 1 + old_count)
+        .unwrap_or_else(|| {
+            panic!(
+                "the payload's header {sliced_header} names lines {}..{} of a {}-line file",
+                old_start,
+                old_start - 1 + old_count,
+                base.len()
+            )
+        });
+    assert_eq!(
+        old_side, claimed,
+        "the payload's old side is not the base file at the line its header names"
+    );
     // Every kept line is one of the hunk's own lines, in order, with `+`/`-`
     // lines that were not selected turned into context.
     let stripped = |line: &str| -> String {
@@ -797,13 +828,14 @@ fn absorb_routes_hunks_to_their_introducing_ancestor(tc: TestCase) {
 
     let absorbed = repo.tool_ok(&["absorb"]);
     markers.add(&absorbed);
-    // `absorb/new_file` is placed on the new-file branch but is not required: that
-    // branch is unreachable while `absorb` compares `old_file` against the
-    // `patch(1)` spelling `"/dev/null"` (see `markers::REQUIRED`).
+    // The added file cannot be annotated, so `absorb` routes it to no candidate.
+    // That branch is reachable (`diff::is_absent_side` accepts the parser's
+    // `dev/null`), which is why the marker is part of the required contract.
     markers.require(
         &[
             "apply/absorb_dry_run",
             "apply/absorb_execute",
+            "absorb/new_file",
             "absorb/matched_change",
         ],
         "absorbing hunks",
