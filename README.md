@@ -181,11 +181,10 @@ path) and asserts `REQUIRED ⊆ hit`. Two markers describe diff shapes `jj` cann
 emit (`copy from`/`copy to`, `similarity index`); they are reached in-process
 through the same library entry point the binary uses.
 
-One further marker is placed but not required: `absorb/new_file` sits on a branch
-that cannot be taken while `absorb` compares the absent side against `"/dev/null"`
-instead of the `dev/null` the parser stores. It is on the same footing as the two
-`offset/*` fallbacks above — a marker kept for the code it guards, deliberately
-outside the contract until the code can reach it.
+No marker is left outside the contract for code that cannot run. `absorb/new_file`
+used to sit on a branch `absorb` never took, because it compared the absent side
+against `"/dev/null"` while the parser stores the bare `dev/null`; the fix for that
+landed with the two incidental defects, so the marker is now part of `REQUIRED`.
 
 | marker | where it is placed | what it proves |
 |---|---|---|
@@ -210,7 +209,7 @@ outside the contract until the code can reach it.
 | `apply/absorb_dry_run`, `apply/absorb_execute` | `tool::absorb_hunks` | absorb planned, then wrote |
 | `apply/jj_tool`, `apply/jj_tool_reverse` | `tool::jj_tool_apply` | the `--tool` protocol applied a payload, forward and reverse |
 | `absorb/matched_change`, `absorb/matched_file`, `absorb/ambiguous`, `absorb/no_overlap` | `tool::absorb_hunks` routing | each reachable routing decision |
-| `absorb/new_file` | `tool::absorb_hunks`, new-file branch | **not required yet**: that branch compares `old_file` against `"/dev/null"` while the parser stores `dev/null`, so it never runs; it joins `REQUIRED` once that comparison is fixed |
+| `absorb/new_file` | `tool::absorb_hunks`, new-file branch | a hunk whose old side is absent — a new file — is routed to no candidate |
 | `error/hunk_not_found`, `error/unsupported_metadata`, `error/no_hunks_selected`, `error/invalid_range_start`/`…_end`/`…_line_number`, `error/range_bounds`, `error/jj_command_failed`, `error/patch_apply_failed`, `error/missing_patch_env` | every bail/callback site | each user-reachable failure path |
 | `offset/header_ranges_fallback`, `offset/old_range_unparsed` | `tool::parse_header_ranges`, `tool::absorb_hunks` | **not required**: defensive fallbacks for a malformed `@@` header, which `jj` never emits |
 

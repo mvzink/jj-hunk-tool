@@ -220,12 +220,7 @@ pub const REQUIRED: &[Marker] = &[
     Marker::ApplyJjTool,
     Marker::ApplyJjToolReverse,
     // Absorb routing.
-    //
-    // `absorb/new_file` is deliberately absent: it sits on `absorb`'s "new files
-    // can't be annotated" branch, which compares `old_file` against the
-    // `patch(1)` spelling `"/dev/null"` while the parser stores the bare
-    // `dev/null`, so the branch is unreachable today. It joins this list when
-    // that comparison is fixed; until then requiring it would only fail.
+    Marker::AbsorbNewFile,
     Marker::AbsorbMatchedChange,
     Marker::AbsorbMatchedFile,
     Marker::AbsorbAmbiguous,
@@ -328,17 +323,6 @@ pub fn parse_emitted(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Is this side of a diff section absent, i.e. a `--- /dev/null` (added file) or
-/// `+++ /dev/null` (deleted file) header?
-///
-/// `parse_diff` strips the leading slash, so the value it stores is the bare
-/// `dev/null`. Both spellings are accepted: the bare one is what the parser
-/// produces today, and accommodating the `patch(1)` spelling keeps this
-/// observation honest if the diff ever comes from somewhere else.
-fn is_absent_side(path: &str) -> bool {
-    path == "dev/null" || path == "/dev/null"
-}
-
 /// Record the file and hunk shapes present in an identified diff.
 ///
 /// Every command converts `jj diff` output into identified hunks through this
@@ -358,9 +342,9 @@ pub fn observe_hunks(identified: &[(String, &DiffHunk)]) {
             // prefix, so this marks the collision path, not the ordinary ids.
             crate::hit!(ParseDuplicateIdSuffix);
         }
-        if is_absent_side(&hunk.old_file) {
+        if crate::diff::is_absent_side(&hunk.old_file) {
             crate::hit!(ParseHunkNewFile);
-        } else if is_absent_side(&hunk.new_file) {
+        } else if crate::diff::is_absent_side(&hunk.new_file) {
             crate::hit!(ParseHunkDeletedFile);
         } else if hunk.old_file != hunk.new_file {
             crate::hit!(ParseHunkPathChange);
