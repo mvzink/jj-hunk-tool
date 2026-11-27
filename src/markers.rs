@@ -155,6 +155,21 @@ marker_set! {
     OffsetHeaderRangesFallback => "offset/header_ranges_fallback",
     OffsetOldRangeUnparsed => "offset/old_range_unparsed",
 
+    // ── Payload validation (`validate::validate_patch`) ──────────────────────
+    //
+    // The generator-side canary that replaces the strictness `git apply` does
+    // not have; see `src/validate.rs` for the rules each rejection marker
+    // stands for.
+    ValidateAccepted => "validate/accepted",
+    ErrorPayloadShape => "error/payload_shape",
+    ErrorPayloadContextCeiling => "error/payload_context_ceiling",
+    ErrorPayloadContextImbalance => "error/payload_context_imbalance",
+    ErrorPayloadZeroContext => "error/payload_zero_context",
+    ErrorPayloadNoChanges => "error/payload_no_changes",
+    // Defensive: a `\ No newline` marker that does not follow a hunk line can
+    // only come from a hand-written payload, never from `build_combined_patch`.
+    ErrorPayloadNoNewlineMarker => "error/payload_no_newline_marker",
+
     // ── Error paths ─────────────────────────────────────────────────────────
     ErrorHunkNotFound => "error/hunk_not_found",
     ErrorUnsupportedMetadata => "error/unsupported_metadata",
@@ -165,6 +180,7 @@ marker_set! {
     ErrorRangeBounds => "error/range_bounds",
     ErrorJjCommandFailed => "error/jj_command_failed",
     ErrorPatchApplyFailed => "error/patch_apply_failed",
+    ErrorPatchApplierMissing => "error/patch_applier_missing",
     ErrorMissingPatchEnv => "error/missing_patch_env",
 }
 
@@ -225,6 +241,17 @@ pub const REQUIRED: &[Marker] = &[
     Marker::AbsorbMatchedFile,
     Marker::AbsorbAmbiguous,
     Marker::AbsorbNoOverlap,
+    // Payload validation: every accepted payload, and one rejection per rule.
+    // The rejection markers are reached in-process by the coverage contract
+    // (`payload_validation`), and by `src/validate.rs`'s own unit tests.
+    // `error/payload_no_newline_marker` is deliberately absent: it is a
+    // defensive rejection for hand-written payloads, like the `offset/*` pair.
+    Marker::ValidateAccepted,
+    Marker::ErrorPayloadShape,
+    Marker::ErrorPayloadContextCeiling,
+    Marker::ErrorPayloadContextImbalance,
+    Marker::ErrorPayloadZeroContext,
+    Marker::ErrorPayloadNoChanges,
     // Offset / context edges are asserted by the properties that check hunk
     // spans and header arithmetic (tests/properties_shapes.rs,
     // tests/properties_apply.rs); the two `offset/*` markers are defensive
@@ -240,6 +267,7 @@ pub const REQUIRED: &[Marker] = &[
     Marker::ErrorRangeBounds,
     Marker::ErrorJjCommandFailed,
     Marker::ErrorPatchApplyFailed,
+    Marker::ErrorPatchApplierMissing,
     Marker::ErrorMissingPatchEnv,
 ];
 
@@ -425,19 +453,24 @@ pub fn emit_if_requested() {
     }
 }
 
+/// Unit tests in one binary share this process's marker state, so a test that
+/// resets or asserts on the set holds this lock for its duration. Crate-internal
+/// so the validator's own unit tests (`crate::validate::tests`) take the same
+/// lock instead of racing this module's.
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    reset();
+    guard
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Unit tests in one binary share this process's marker state, so tests
-    /// that assert on the set take this lock and reset before asserting.
-    static LOCK: Mutex<()> = Mutex::new(());
 
     fn locked() -> std::sync::MutexGuard<'static, ()> {
-        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset();
-        guard
+        test_lock()
     }
 
     #[test]

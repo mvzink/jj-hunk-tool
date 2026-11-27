@@ -167,7 +167,7 @@ fn main() -> Result<()> {
 }
 
 fn run() -> Result<()> {
-    // Prevent any child process (jj, patch, etc.) from opening an interactive editor.
+    // Prevent any child process (jj, git apply, etc.) from opening an interactive editor.
     // SAFETY: this runs at the start of main before any threads are spawned.
     unsafe { std::env::set_var("EDITOR", "true") };
 

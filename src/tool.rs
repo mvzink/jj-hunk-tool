@@ -189,6 +189,12 @@ pub fn build_combined_patch(specs: &[HunkSpec<'_>], reverse: bool) -> Result<Str
         };
         combined.push_str(&git_surgeon::patch::build_patch(&balance_context(&patched)));
     }
+    // One choke point: every payload the tool prints or applies passes the
+    // generator-side validator, so a payload only one applier could read fails
+    // here, naming the offending hunk, instead of at `git apply` (which accepts
+    // far more than GNU patch) or in the `.rej` file GNU patch leaves behind.
+    // See `src/validate.rs` for the rules.
+    crate::validate::validate_patch(&combined)?;
     Ok(combined)
 }
 
@@ -1108,9 +1114,10 @@ fn parse_old_range(header: &str) -> Option<(usize, usize)> {
 /// - `$right` = current state directory (writable)
 ///
 /// Algorithm:
-/// 1. Read patch path from JJ_HUNK_TOOL_PATCH env var
+/// 1. Read the patch from the path in the JJ_HUNK_TOOL_PATCH env var and
+///    validate it (`validate::validate_patch`)
 /// 2. Reset $right to match $left (copy all files from left, remove extras)
-/// 3. Apply the patch to $right
+/// 3. Apply the patch to $right with plain `git apply` (no repository needed)
 pub fn jj_tool_apply(left: &str, right: &str) -> Result<()> {
     let patch_path = std::env::var(PATCH_ENV_VAR).with_context(|| {
         crate::hit!(ErrorMissingPatchEnv);
@@ -1120,27 +1127,84 @@ pub fn jj_tool_apply(left: &str, right: &str) -> Result<()> {
     let left_path = Path::new(left);
     let right_path = Path::new(right);
 
-    // Step 1: Reset $right to $left state
+    // Step 1: read and validate the payload before anything is touched.
+    //
+    // The payload was validated by `build_combined_patch` before it was written
+    // to this file, but `_jj-tool` reads it back from the environment and from
+    // disk, so the check is repeated at the point of use: a payload that only
+    // one applier can read must fail here, naming the hunk, not half under
+    // `git apply`.
+    let patch_text = std::fs::read_to_string(&patch_path)
+        .with_context(|| format!("reading patch file {patch_path}"))?;
+    crate::validate::validate_patch(&patch_text)?;
+
+    // Step 2: Reset $right to $left state
     reset_dir_to(left_path, right_path)?;
 
-    // Step 2: Apply the pre-computed patch
+    // Step 3: apply the patch to $right with plain `git apply`.
+    //
+    // No repository is needed or created: `git apply` outside a Git working tree
+    // patches the paths it is given relative to the current directory, leaves no
+    // index behind and creates no `.orig`/`.rej` backups. That matters because
+    // jj hands the `--tool` protocol two repo-less temp directories outside the
+    // working copy (for `diffedit`, `split`, `squash` and `restore` alike), so
+    // colocation is irrelevant here and neither `--index`, `--cached` nor
+    // `--3way` has anything to act on.
+    //
+    // `--allow-empty` keeps an empty payload a no-op (jj's reset-and-apply
+    // contract), as GNU patch treated it, and `--whitespace=nowarn` keeps a
+    // payload that legitimately adds trailing whitespace from printing warnings
+    // the old `patch --silent` never printed. Neither relaxes a failure: a patch
+    // that does not apply still exits non-zero with git's own stderr below.
+    //
+    // `-c core.autocrlf=false` pins the *bytes*: the temp directories are outside
+    // any repository, so `git apply` reads the user's global config, and with
+    // `core.autocrlf=true` it rewrites every applied line to CRLF. A patch
+    // applier must write the payload's bytes, not a preferred line ending; a
+    // command-line `-c` also wins over a `GIT_CONFIG_*` environment override.
     let reverse = std::env::var(REVERSE_ENV_VAR).is_ok();
     crate::hit!(ApplyJjTool);
     if reverse {
         crate::hit!(ApplyJjToolReverse);
     }
-    let mut patch_cmd = Command::new("patch");
-    patch_cmd.args(["-p1", "--silent"]);
+    let mut apply_cmd = Command::new("git");
+    apply_cmd.args([
+        "-c",
+        "core.autocrlf=false",
+        "apply",
+        "-p1",
+        "--allow-empty",
+        "--whitespace=nowarn",
+    ]);
     if reverse {
-        patch_cmd.arg("--reverse");
+        apply_cmd.arg("-R");
     }
-    patch_cmd.arg("-i").arg(&patch_path);
-    patch_cmd.current_dir(right_path);
-    let status = patch_cmd.status().context("failed to run patch")?;
+    apply_cmd.arg("--").arg(&patch_path);
+    apply_cmd.current_dir(right_path);
+    let output = match apply_cmd.output() {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            crate::hit!(ErrorPatchApplierMissing);
+            bail!(
+                "no `git` executable found on PATH: applying hunk selections now runs \
+                 `git apply`, which needs git installed (any version with `git apply \
+                 --allow-empty`). Install git or put it on PATH; GNU patch is no longer \
+                 a runtime dependency"
+            );
+        }
+        Err(error) => return Err(error).context("failed to run git apply"),
+    };
 
-    if !status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() {
+        eprint!("{stderr}");
+    }
+    if !output.status.success() {
         crate::hit!(ErrorPatchApplyFailed);
-        bail!("patch failed to apply (exit code: {:?})", status.code());
+        bail!(
+            "patch failed to apply (git apply exit code: {:?})",
+            output.status.code()
+        );
     }
 
     Ok(())
