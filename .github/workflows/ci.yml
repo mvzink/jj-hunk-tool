@@ -60,11 +60,15 @@ jobs:
         run: |
           set -euo pipefail
           url="https://github.com/jj-vcs/jj/releases/download/v${JJ_VERSION}/jj-v${JJ_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          curl -sSfL -o /tmp/jj.tar.gz "$url"
+          curl -sSfL -o "$RUNNER_TEMP/jj.tar.gz" "$url"
           # Checksum of the v0.44.0 x86_64-linux-musl asset.
-          echo "0a07bab4641a55fd2bc2fd1563ba3a3f9a577584086ad74086a1c5b69b3ffce9  /tmp/jj.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/jj.tar.gz -C /tmp
-          sudo install -m 0755 /tmp/jj /usr/local/bin/jj
+          echo "0a07bab4641a55fd2bc2fd1563ba3a3f9a577584086ad74086a1c5b69b3ffce9  $RUNNER_TEMP/jj.tar.gz" | sha256sum -c -
+          # The archive carries a "./" entry, so tar restores that directory's mode
+          # and mtime; unpacking into a shared directory such as /tmp fails with
+          # "Cannot utime: Operation not permitted". Use a directory this job owns.
+          mkdir -p "$RUNNER_TEMP/jj"
+          tar -xzf "$RUNNER_TEMP/jj.tar.gz" -C "$RUNNER_TEMP/jj"
+          sudo install -m 0755 "$RUNNER_TEMP/jj/jj" /usr/local/bin/jj
           jj --version
 
       - name: Check the external commands the tests spawn
