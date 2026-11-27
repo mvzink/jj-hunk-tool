@@ -720,6 +720,22 @@ pub fn hunks_for(paths: &[String], output: &str) -> Vec<String> {
 
 /// Apply `patch_text` to a scratch copy of `base` and return the resulting
 /// bytes of `rel`.
+///
+/// Applies the payload with `git apply`, which never fuzzes: a hunk whose
+/// context does not match line for line, whose header counts do not describe its
+/// body, or whose file header is wrong is rejected. That is the strictness the
+/// oracle needs.
+///
+/// `patch(1)` — the applier the tool's own `_jj-tool` path runs — is deliberately
+/// not the oracle here. Slicing a hunk turns unselected removals into context, so
+/// a payload can end up with more context on one side of its changes than the
+/// other; GNU patch reads unbalanced context as "this hunk is anchored at the
+/// start or end of the file" and rejects the payload anywhere else (upstream
+/// issue #2, with a fix in flight). `-F 0` does not help, because that heuristic
+/// is not fuzz. `git apply` has no such heuristic: it judges the payload on its
+/// content alone, which is exactly the property under test, so the payloads are
+/// applied here and the tool's own applier is exercised by the integration
+/// suite instead.
 pub fn apply_patch_to_copy(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> {
     let scratch = tempfile::tempdir().expect("create scratch dir");
     let target = scratch.path().join(rel);
@@ -729,16 +745,24 @@ pub fn apply_patch_to_copy(rel: &str, base: &[u8], patch_text: &str) -> Vec<u8> 
     std::fs::write(&target, base).expect("write scratch base");
     let patch_file = scratch.path().join(".hegel-patch.diff");
     std::fs::write(&patch_file, patch_text).expect("write patch file");
-    let output = Command::new("patch")
-        .args(["-p1", "-F", "0", "--batch", "--silent", "-i"])
+
+    let init = Command::new("git")
+        .args(["init", "--quiet", "."])
+        .current_dir(scratch.path())
+        .output()
+        .expect("run git init");
+    assert!(init.status.success(), "git init failed in scratch dir");
+
+    let apply = Command::new("git")
+        .args(["apply", "-p1"])
         .arg(&patch_file)
         .current_dir(scratch.path())
         .output()
-        .expect("run patch");
+        .expect("run git apply");
     assert!(
-        output.status.success(),
-        "patch failed for {rel}: {}\n--- patch ---\n{patch_text}",
-        String::from_utf8_lossy(&output.stderr)
+        apply.status.success(),
+        "git apply rejected the patch for {rel}: {}\n--- patch ---\n{patch_text}",
+        String::from_utf8_lossy(&apply.stderr)
     );
     std::fs::read(&target).expect("read patched file")
 }
