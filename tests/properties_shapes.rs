@@ -597,7 +597,7 @@ fn listing_matches_jj_for_every_file_shape(tc: TestCase) {
             );
             if file.shape.compares_bodies() {
                 let section = section.expect("hunk-bearing shapes always have a section");
-                let expected = oracle_blocks_patch(section, &[0]);
+                let expected = oracle_payload(section, &[0]);
                 assert_eq!(
                     patched.stdout, expected,
                     "{:?} ({:?}): payload is not jj's block verbatim",
@@ -953,7 +953,7 @@ fn unusual_paths_are_listed_and_selected_faithfully(tc: TestCase) {
         );
         assert_eq!(
             patched.stdout,
-            oracle_blocks_patch(section, &[0]),
+            oracle_payload(section, &[0]),
             "path {path:?}: payload is not jj's block verbatim"
         );
     }
