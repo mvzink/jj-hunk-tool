@@ -42,6 +42,13 @@ macro_rules! hit {
     }};
 }
 
+/// Mark `marker` as reached. A relaxed store: no allocation, no lock, no
+/// ordering requirements (the set is only read at exit or by tests).
+#[inline]
+pub fn hit(marker: Marker) {
+    HITS[marker as usize].store(true, Ordering::Relaxed);
+}
+
 /// Set this in the environment to make the binary print its hit markers to
 /// stderr when it exits. Any non-empty value enables it.
 pub const MARKERS_ENV_VAR: &str = "JJ_HUNK_TOOL_MARKERS";
@@ -137,6 +144,14 @@ marker_set! {
     AbsorbNoOverlap => "absorb/no_overlap",
 
     // ── Offset / context edge cases ──────────────────────────────────────────
+    //
+    // Both are defensive fallbacks for a malformed `@@` header, which `jj` never
+    // emits: `parse_header_ranges` falls back to (1, 1) when the header does not
+    // start with `@@ -`, and `absorb` treats a header it cannot parse as "no old
+    // range". They are placed so a future caller that *can* feed them a
+    // malformed header (a hand-edited patch, a different diff backend) reports
+    // it, but they are not required: no deterministic test can reach them
+    // without synthesising a header that no command would ever consume.
     OffsetHeaderRangesFallback => "offset/header_ranges_fallback",
     OffsetOldRangeUnparsed => "offset/old_range_unparsed",
 
@@ -158,8 +173,9 @@ marker_set! {
 /// path fails the suite instead of quietly shrinking coverage.
 ///
 /// Adding a marker to a code path without adding it here is allowed (markers
-/// may be placed for later work or for shapes `jj` itself cannot produce), but
-/// adding it here is a promise that a deterministic test reaches it.
+/// may be placed for later work, for shapes `jj` itself cannot produce, or for
+/// defensive fallbacks nothing can reach), but adding it here is a promise that
+/// a deterministic test reaches it.
 pub const REQUIRED: &[Marker] = &[
     // Diff decoding.
     Marker::DiffSectionDecoded,
@@ -214,9 +230,11 @@ pub const REQUIRED: &[Marker] = &[
     Marker::AbsorbMatchedFile,
     Marker::AbsorbAmbiguous,
     Marker::AbsorbNoOverlap,
-    // Offset / context edges.
-    Marker::OffsetHeaderRangesFallback,
-    Marker::OffsetOldRangeUnparsed,
+    // Offset / context edges are asserted by the properties that check hunk
+    // spans and header arithmetic (tests/properties_shapes.rs,
+    // tests/properties_apply.rs); the two `offset/*` markers are defensive
+    // fallbacks for malformed headers that `jj` never emits, so they are
+    // deliberately not part of the contract.
     // Error paths.
     Marker::ErrorHunkNotFound,
     Marker::ErrorUnsupportedMetadata,
@@ -229,13 +247,6 @@ pub const REQUIRED: &[Marker] = &[
     Marker::ErrorPatchApplyFailed,
     Marker::ErrorMissingPatchEnv,
 ];
-
-/// Mark `marker` as reached. A relaxed store: no allocation, no lock, no
-/// ordering requirements (the set is only read at exit or by tests).
-#[inline]
-pub fn hit(marker: Marker) {
-    HITS[marker as usize].store(true, Ordering::Relaxed);
-}
 
 /// Whether `marker` has been reached in this process.
 #[inline]
