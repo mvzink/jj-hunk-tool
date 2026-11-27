@@ -2,8 +2,8 @@ use anyhow::{Result, bail};
 use std::collections::HashSet;
 use std::process::Command;
 
-use git_surgeon::diff::DiffHunk;
-pub use git_surgeon::diff::{check_supported, parse_diff};
+pub use git_surgeon::diff::parse_diff;
+use git_surgeon::diff::{DiffHunk, check_supported};
 pub use git_surgeon::hunk_id::assign_ids;
 
 /// [`check_supported`], with coverage markers on both outcomes.
