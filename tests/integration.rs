@@ -327,6 +327,37 @@ fn hunks_file_filter() {
 }
 
 #[test]
+fn hunks_file_filter_accepts_a_path_starting_with_a_hyphen() {
+    // A path is an operand, not an option. `--- a.txt` is a legal file name (and
+    // exactly the kind of name a hunk tool has to keep addressable), but a value
+    // that starts with `-` was parsed as a flag, so the file could be listed and
+    // not filtered to.
+    let repo = TestRepo::new();
+    repo.commit_file("--- a.txt", "one\ntwo\nthree\n");
+    repo.commit_file("other.txt", "other\n");
+    repo.write_file("--- a.txt", "one\nTWO\nthree\n");
+
+    let output = repo.tool_ok(&["hunks", "--file", "--- a.txt"]);
+    assert!(
+        output.contains("--- a.txt"),
+        "the hyphen-leading path should be listed, got:\n{output}"
+    );
+    assert!(!output.contains("other.txt"));
+
+    // The filtered listing must agree with the unfiltered one.
+    let unfiltered = repo.tool_ok(&["hunks"]);
+    let id = unfiltered
+        .lines()
+        .find(|line| line.contains("--- a.txt"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("the hyphen-leading path has a hunk");
+    assert!(
+        output.contains(id),
+        "the filtered listing should contain hunk {id}, got:\n{output}"
+    );
+}
+
+#[test]
 fn hunks_file_filter_nonexistent() {
     let repo = TestRepo::new();
     repo.commit_file("a.txt", "a\n");
